@@ -37,8 +37,8 @@ using namespace std;
 
 // 候補手の最大数(盤上全体)
 constexpr int UCT_CHILD_MAX = 593;
-set<std::pair<Key, int>> st[321];
-int st_num[321];
+//set<std::pair<Key, int>> st[321];
+//int st_num[321];
 int threads = 2;
 float ALPHA_D = 0.75f;
 float KLDGAIN_THRESHOLD = 0.0000100;
@@ -1063,6 +1063,7 @@ void UCTSearcher::Playout(visitor_t& visitor)
 				kif.clear();
 				kif += "position ";
 				kif += pos_root->toSFEN() + " moves ";
+				hcp = pos_root->toHuffmanCodedPos();
 				// SPDLOG_DEBUG(logger, "gpu_id:{} group_id:{} id:{} ply:{} {}", grp->gpu_id, grp->group_id, id, ply, pos_root->toSFEN());
 
 				records.clear();
@@ -1425,10 +1426,10 @@ void UCTSearcher::NextPly(const Move move)
 	pos_root->doMove(move, states[ply]);
 	kif += move.toUSI() + " ";
 	ply++;
-	st[ply].insert(make_pair(pos_root->getKey(), ply));
-	st_num[ply] += 1;
-	if (st_num[ply] % 100 == 0 && ply >= 20 && ply % 5 == 0)
-		std::cout << ply << " " << st[ply].size() << "/" << st_num[ply] << std::endl;
+	//st[ply].insert(make_pair(pos_root->getKey(), ply));
+	//st_num[ply] += 1;
+	//if (st_num[ply] % 100 == 0 && ply >= 20 && ply % 5 == 0)
+	//	std::cout << ply << " " << st[ply].size() << "/" << st_num[ply] << std::endl;
 
 	// 千日手の場合
 	switch (pos_root->isDraw(16)) {
