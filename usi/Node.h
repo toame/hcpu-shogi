@@ -56,6 +56,7 @@ struct child_node_t {
 
 	Move move;                   // 着手する座標
 	float nnrate;                // ニューラルネットワークでのレート
+	float noise;
 	atomic_t<int> move_count; // 探索回数
 	atomic_t<WinType> win;    // 勝った回数
 };

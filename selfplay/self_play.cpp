@@ -6,7 +6,7 @@
 #include "search.hpp"
 #include "book.hpp"
 #include "fastmath.h"
-
+#include <set>
 #include <iostream>
 #include <fstream>
 #include <random>
@@ -27,7 +27,7 @@
 #include "cxxopts/cxxopts.hpp"
 
 //#define SPDLOG_TRACE_ON
-//#define SPDLOG_DEBUG_ON
+#define SPDLOG_DEBUG_ON
 #define SPDLOG_EOL "\n"
 #include "spdlog/spdlog.h"
 auto loggersink = std::make_shared<spdlog::sinks::stdout_sink_mt>();
@@ -37,9 +37,20 @@ using namespace std;
 
 // 候補手の最大数(盤上全体)
 constexpr int UCT_CHILD_MAX = 593;
-
+set<std::pair<Key, int>> st[321];
+int st_num[321];
 int threads = 2;
-
+float ALPHA_D = 0.75f;
+void random_dirichlet(std::mt19937_64& mt, std::vector<float>& x, const float alpha) {
+	std::gamma_distribution<float> gamma(alpha, 1.0);
+	float sum_y = 0;
+	for (int i = 0; i < x.size(); i++) {
+		float y = gamma(mt);
+		sum_y += y;
+		x[i] = y;
+	}
+	std::for_each(x.begin(), x.end(), [sum_y](float& v) { v /= sum_y; });
+}
 volatile sig_atomic_t stopflg = false;
 
 void sigint_handler(int signum)
@@ -55,6 +66,7 @@ float RANDOM_CUTOFF = 0.015f;
 float RANDOM_CUTOFF_DROP = 0.001f;
 // 訪問数に応じてランダムに選択する際の温度パラメータ
 float RANDOM_TEMPERATURE = 10.0f;
+float RANDOM_TEMPERATURE_FINAL = 0.45f;
 // 1手ごとに低下する温度
 float RANDOM_TEMPERATURE_DROP = 1.0f;
 // ランダムムーブした局面を学習する
@@ -65,6 +77,8 @@ float RANDOM2 = 0;
 int MIN_MOVE;
 // ルートの方策に加えるノイズの確率(千分率)
 int ROOT_NOISE;
+
+int WINRATE_COUNT;
 
 // 終局とする勝率の閾値
 float WINRATE_THRESHOLD;
@@ -108,6 +122,8 @@ unsigned int nn_cache_size = 8388608; // NNキャッシュサイズ
 s64 teacherNodes; // 教師局面数
 std::atomic<s64> idx(0);
 std::atomic<s64> madeTeacherNodes(0);
+std::atomic<s64> black_wins(0);
+std::atomic<s64> white_wins(0);
 std::atomic<s64> games(0);
 std::atomic<s64> draws(0);
 std::atomic<s64> nyugyokus(0);
@@ -233,7 +249,7 @@ inline s16 value_to_score(const float value) {
 
 // 詰み探索スロット
 struct MateSearchEntry {
-	Position *pos;
+	Position* pos;
 	enum State { RUNING, NOMATE, WIN, LOSE };
 	atomic<State> status;
 	Move move;
@@ -261,12 +277,12 @@ public:
 		checkCudaErrors(cudaFreeHost(y2));
 	}
 
-	void QueuingNode(const Position *pos, uct_node_t* node, float* value_win);
+	void QueuingNode(const Position* pos, uct_node_t* node, float* value_win);
 	void EvalNode();
 	void SelfPlay();
 	void Run();
 	void Join();
-	void QueuingMateSearch(Position *pos, const int id) {
+	void QueuingMateSearch(Position* pos, const int id) {
 		lock_guard<mutex> lock(mate_search_mutex);
 		mate_search_slot[id].pos = pos;
 		mate_search_slot[id].status = MateSearchEntry::RUNING;
@@ -372,9 +388,12 @@ private:
 	// NNキャッシュ(UCTSearcherGroupで共有)
 	NNCache& nn_cache;
 
+	std::string kif;
+
 	int max_playout_num;
 	int playout;
 	int ply;
+	int winrate_count = 0;
 	GameResult gameResult;
 	u8 reason;
 
@@ -386,6 +405,7 @@ private:
 
 	// ノイズにより選んだ回数
 	std::vector<int> noise_count;
+	std::vector<int> prev_visit;
 
 	// 詰み探索のステータス
 	MateSearchEntry::State mate_status;
@@ -507,7 +527,7 @@ UCTSearcherGroup::Initialize()
 		while (std::getline(ss, field, ',')) {
 			const auto pos = field.find_first_of(":");
 			options.emplace_back(field.substr(0, pos), field.substr(pos + 1));
-		
+
 		}
 		usi_engines.reserve(usi_threads);
 		for (int i = 0; i < usi_threads; ++i) {
@@ -835,18 +855,18 @@ UCTSearcher::SelectMaxUcbChild(child_node_t* parent, uct_node_t* current)
 
 	// UCB値最大の手を求める
 	for (int i = 0; i < child_num; i++) {
-		if (uct_child[i].IsWin()) {
-			child_win_count++;
-			// 負けが確定しているノードは選択しない
-			continue;
-		}
-		else if (uct_child[i].IsLose()) {
-			// 子ノードに一つでも負けがあれば、自ノードを勝ちにできる
-			if (parent != nullptr)
-				parent->SetWin();
-			// 勝ちが確定しているため、選択する
-			return i;
-		}
+		//if (uct_child[i].IsWin()) {
+		//	child_win_count++;
+		//	// 負けが確定しているノードは選択しない
+		//	continue;
+		//}
+		//else if (uct_child[i].IsLose()) {
+		//	// 子ノードに一つでも負けがあれば、自ノードを勝ちにできる
+		//	if (parent != nullptr)
+		//		parent->SetWin();
+		//	// 勝ちが確定しているため、選択する
+		//	return i;
+		//}
 
 		const WinType win = uct_child[i].win;
 		const int move_count = uct_child[i].move_count;
@@ -861,20 +881,21 @@ UCTSearcher::SelectMaxUcbChild(child_node_t* parent, uct_node_t* current)
 			u = sqrt_sum / (1 + move_count);
 		}
 
-		float rate = uct_child[i].nnrate;
-		if (parent == nullptr) {
-			const float ucb_value_nonoise = q + c * u * rate;
-			// ノイズがない場合の選択
-			if (ucb_value_nonoise > max_value_nonoise) {
-				max_value_nonoise = ucb_value_nonoise;
-				max_child_nonoise = i;
-			}
-			// ランダムに確率を上げる
-			if (rnd(*mt) < ROOT_NOISE)
-				rate = (rate + 1.0f) / 2.0f;
-		}
 
-		const float ucb_value = q + c * u * rate;
+		//if (parent == nullptr) {
+		//	const float ucb_value_nonoise = q + c * u * rate;
+		//	// ノイズがない場合の選択
+		//	if (ucb_value_nonoise > max_value_nonoise) {
+		//		max_value_nonoise = ucb_value_nonoise;
+		//		max_child_nonoise = i;
+		//	}
+		//	// ランダムに確率を上げる
+		//	// if (rnd(*mt) < ROOT_NOISE)
+		//	//	rate = (rate + 1.0f) / 2.0f;
+		//}
+		float rate = uct_child[i].nnrate;
+		float noise_rate = parent == nullptr ? uct_child[i].nnrate * ALPHA_D + (1.0f - ALPHA_D) * uct_child[i].noise : uct_child[i].nnrate;
+		const float ucb_value = q + c * u * noise_rate;
 
 		if (ucb_value > max_value) {
 			max_value = ucb_value;
@@ -904,7 +925,7 @@ UCTSearcher::SelectMaxUcbChild(child_node_t* parent, uct_node_t* current)
 //  ノードをキューに追加            //
 //////////////////////////////////////
 void
-UCTSearcherGroup::QueuingNode(const Position *pos, uct_node_t* node, float* value_win)
+UCTSearcherGroup::QueuingNode(const Position* pos, uct_node_t* node, float* value_win)
 {
 	// set all zero
 	std::fill_n(features1[current_policy_value_batch_index], sizeof(packed_features1_t), 0);
@@ -914,7 +935,7 @@ UCTSearcherGroup::QueuingNode(const Position *pos, uct_node_t* node, float* valu
 	policy_value_batch[current_policy_value_batch_index] = { node, pos->turn(), pos->getKey(), value_win };
 	current_policy_value_batch_index++;
 }
-
+int visit_count[65];
 //////////////////////////
 //  探索打ち止めの確認  //
 //////////////////////////
@@ -927,37 +948,87 @@ UCTSearcher::InterruptionCheck(const int playout_count, const int extension_time
 	const int rest = max_playout_num - playout_count;
 	const child_node_t* uct_child = root_node->child.get();
 
-	// 探索回数が最も多い手と次に多い手を求める
-	for (int i = 0; i < child_num; i++) {
-		if (uct_child[i].move_count > max) {
-			second = max;
-			max = uct_child[i].move_count;
-			max_index = i;
-		}
-		else if (uct_child[i].move_count > second) {
-			second = uct_child[i].move_count;
-		}
-	}
+	if (playout_count % 100 != 0 || playout_count == 0)
+		return false;
 
-	// 詰みが見つかった場合は探索を打ち切る
-	if (uct_child[max_index].IsLose())
-		return true;
-
-	// 残りの探索を全て次善手に費やしても
-	// 最善手を超えられない場合は探索を打ち切る
-	if (max - second > rest) {
-		// 最善手の探索回数が次善手の探索回数の
-		// 1.2倍未満なら探索延長
-		if (max_playout_num < playout_num * extension_times && max < second * 1.2) {
-			max_playout_num += playout_num / 2;
-			return false;
-		}
-
+	if (playout_count >= max_playout_num) {
+		std::cout << "Interruption" << " " << playout_count << std::endl;
 		return true;
 	}
-	else {
+
+	float kldgain = 0.0;
+	if (playout_count == 100) {
+		for (int i = 0; i < child_num; i++) {
+			prev_visit[i] = uct_child[i].move_count;
+		}
 		return false;
 	}
+	float sum1 = playout_count - 100;
+	float sum2 = playout_count;
+	for (int i = 0; i < child_num; i++) {
+		float old_p = prev_visit[i] / sum1;
+		float new_p = uct_child[i].move_count / sum2;
+		
+		if (old_p != 0 && new_p != 0) {
+			kldgain += old_p * log(old_p / new_p);
+		}
+	}
+	kldgain /= 100;
+	//std::cout << "Interruption" << " " << kldgain << " " << playout_count << std::endl;
+	if (kldgain < 0.0000100) {
+		visit_count[playout_count / 100] += 1;
+		int sum_playout = 0;
+		int sum_count = 0;
+		if (visit_count[playout_count / 100] % 100 == 0) {
+			for (int i = 0; i < 65; i++) {
+				sum_playout += visit_count[i] * (i * 100);
+				sum_count += visit_count[i];
+			}
+			std::cout << "average = " << sum_playout / sum_count << std::endl;
+			//for (int i = 0; i < 65; i++) {
+			//	if (visit_count[i] > 0)
+			//		std::cout << i * 100 << " " << visit_count[i] << std::endl;
+			//}
+		}
+		//std::cout << "Interruption" << " " << kldgain << " " << playout_count << std::endl;
+		return true;
+	}
+	for (int i = 0; i < child_num; i++) {
+		prev_visit[i] = uct_child[i].move_count;
+	}
+	return false;
+
+	//// 探索回数が最も多い手と次に多い手を求める
+	//for (int i = 0; i < child_num; i++) {
+	//	if (uct_child[i].move_count > max) {
+	//		second = max;
+	//		max = uct_child[i].move_count;
+	//		max_index = i;
+	//	}
+	//	else if (uct_child[i].move_count > second) {
+	//		second = uct_child[i].move_count;
+	//	}
+	//}
+
+	////// 詰みが見つかった場合は探索を打ち切る
+	////if (uct_child[max_index].IsLose())
+	////	return true;
+
+	//// 残りの探索を全て次善手に費やしても
+	//// 最善手を超えられない場合は探索を打ち切る
+	//if (max - second > rest) {
+	//	// 最善手の探索回数が次善手の探索回数の
+	//	// 1.2倍未満なら探索延長
+	//	if (max_playout_num < playout_num * extension_times && max < second * 1.2) {
+	//		max_playout_num += playout_num / 2;
+	//		return false;
+	//	}
+
+	//	return true;
+	//}
+	//else {
+	//	return false;
+	//}
 }
 
 // 局面の評価
@@ -971,7 +1042,7 @@ void UCTSearcherGroup::EvalNode() {
 	parent->nn_forward(policy_value_batch_size, features1, features2, y1, y2);
 
 	DType(*logits)[MAX_MOVE_LABEL_NUM * SquareNum] = reinterpret_cast<DType(*)[MAX_MOVE_LABEL_NUM * SquareNum]>(y1);
-	DType *value = y2;
+	DType* value = y2;
 
 	for (int i = 0; i < policy_value_batch_size; i++, logits++, value++) {
 		uct_node_t* node = policy_value_batch[i].node;
@@ -1026,7 +1097,11 @@ void UCTSearcher::Playout(visitor_t& visitor)
 					ifs.read(reinterpret_cast<char*>(&hcp), sizeof(hcp));
 				}
 				setPosition(*pos_root, hcp);
-				SPDLOG_DEBUG(logger, "gpu_id:{} group_id:{} id:{} ply:{} {}", grp->gpu_id, grp->group_id, id, ply, pos_root->toSFEN());
+				pos_root = new Position(DefaultStartPositionSFEN, s.thisptr);
+				kif.clear();
+				kif += "position ";
+				kif += pos_root->toSFEN() + " moves ";
+				// SPDLOG_DEBUG(logger, "gpu_id:{} group_id:{} id:{} ply:{} {}", grp->gpu_id, grp->group_id, id, ply, pos_root->toSFEN());
 
 				records.clear();
 				reason = 0;
@@ -1065,7 +1140,13 @@ void UCTSearcher::Playout(visitor_t& visitor)
 
 			// ノイズ回数初期化
 			noise_count.resize(root_node->child_num);
+			prev_visit.resize(root_node->child_num);
 			std::fill(noise_count.begin(), noise_count.end(), 0);
+			vector<float> v_noise(root_node->child_num);
+			random_dirichlet(*mt_64, v_noise, 0.15f);
+			for (int i = 0; i < root_node->child_num; i++) {
+				root_node->child[i].noise = v_noise[i];
+			}
 
 			// 詰みのチェック
 			if (root_node->child_num == 0) {
@@ -1076,7 +1157,7 @@ void UCTSearcher::Playout(visitor_t& visitor)
 			else if (root_node->child_num == 1) {
 				// 1手しかないときは、その手を指して次の手番へ
 				const Move move = root_node->child[0].move;
-				SPDLOG_DEBUG(logger, "gpu_id:{} group_id:{} id:{} ply:{} {} skip:{}", grp->gpu_id, grp->group_id, id, ply, pos_root->toSFEN(), move.toUSI());
+				// SPDLOG_DEBUG(logger, "gpu_id:{} group_id:{} id:{} ply:{} {} skip:{}", grp->gpu_id, grp->group_id, id, ply, pos_root->toSFEN(), move.toUSI());
 				AddRecord(move, 0, false);
 				NextPly(move);
 				continue;
@@ -1150,7 +1231,7 @@ void UCTSearcher::NextStep()
 				return;
 			throw std::runtime_error("usi engine abort");
 		}
-		SPDLOG_DEBUG(logger, "gpu_id:{} group_id:{} id:{} ply:{} {} usi_move:{} usi_score:{}", grp->gpu_id, grp->group_id, id, ply, pos_root->toSFEN(), result.move.toUSI(), result.score);
+		//SPDLOG_DEBUG(logger, "gpu_id:{} group_id:{} id:{} ply:{} {} usi_move:{} usi_score:{}", grp->gpu_id, grp->group_id, id, ply, pos_root->toSFEN(), result.move.toUSI(), result.score);
 
 		AddRecord(result.move, result.score, false);
 		NextPly(result.move);
@@ -1234,21 +1315,26 @@ void UCTSearcher::NextStep()
 			std::stable_sort(sorted_uct_childs.begin(), sorted_uct_childs.end(), compare_child_node_ptr_descending);
 
 			// 訪問数が最大のノードの価値の一定割合以下は除外
-			const auto max_move_count_child = sorted_uct_childs[0];
-			const int step = (ply - 1) / 2;
-			const float random_cutoff = std::max(0.0f, RANDOM_CUTOFF - RANDOM_CUTOFF_DROP * step);
-			const auto cutoff_threshold = max_move_count_child->win / max_move_count_child->move_count - random_cutoff;
+			//const auto max_move_count_child = sorted_uct_childs[0];
+			//const int step = (ply - 1) / 2;
+			//const float random_cutoff = std::max(0.0f, RANDOM_CUTOFF - RANDOM_CUTOFF_DROP * step);
+			//const auto cutoff_threshold = max_move_count_child->win / max_move_count_child->move_count - random_cutoff;
 			vector<double> probabilities;
 			probabilities.reserve(child_num);
-			const float temperature = std::max(0.1f, RANDOM_TEMPERATURE - RANDOM_TEMPERATURE_DROP * step);
+			float r = 20;
+			const float temperature = (RANDOM_TEMPERATURE * 2) / (1.0 + exp(ply / r));
 			const float reciprocal_temperature = 1.0f / temperature;
-			for (int i = 0; i < child_num; i++) {
+			for (int i = 0; i < std::min<int>(8, child_num); i++) {
 				if (sorted_uct_childs[i]->move_count == 0) break;
 
 				const auto win = sorted_uct_childs[i]->win / sorted_uct_childs[i]->move_count;
-				if (win < cutoff_threshold) break;
+				// if (win < cutoff_threshold) break;
+				int move_count = sorted_uct_childs[i]->move_count + sorted_uct_childs[i]->nnrate * 4;
+				float move_count_correction = move_count > 10 ? move_count - 2.0 : 0.5 * log(1 + exp(2 * (move_count - 2)));
 
-				const auto probability = std::pow(sorted_uct_childs[i]->move_count, reciprocal_temperature);
+				const auto probability = std::pow(move_count_correction, reciprocal_temperature);
+				//if (move_count > 10 && id == 0)
+				//	std::cout << id << " " << ply << " " << move_count << " " << move_count_correction << " " << probability << " " << temperature << std::endl;
 				probabilities.emplace_back(probability);
 				SPDLOG_TRACE(logger, "gpu_id:{} group_id:{} id:{} {}:{} move_count:{} nnrate:{} win_rate:{} probability:{}",
 					grp->gpu_id, grp->group_id, id, i, sorted_uct_childs[i]->move.toUSI(), sorted_uct_childs[i]->move_count,
@@ -1259,7 +1345,7 @@ void UCTSearcher::NextStep()
 			const auto sorted_select_index = dist(*mt_64);
 			best_move = sorted_uct_childs[sorted_select_index]->move;
 			best_wp = sorted_uct_childs[sorted_select_index]->win / sorted_uct_childs[sorted_select_index]->move_count;
-			SPDLOG_DEBUG(logger, "gpu_id:{} group_id:{} id:{} ply:{} {} random_move:{} winrate:{}", grp->gpu_id, grp->group_id, id, ply, pos_root->toSFEN(), best_move.toUSI(), best_wp);
+			//SPDLOG_DEBUG(logger, "gpu_id:{} group_id:{} id:{} ply:{} {} random_move:{} winrate:{}", grp->gpu_id, grp->group_id, id, ply, pos_root->toSFEN(), best_move.toUSI(), best_wp);
 
 			// 局面追加
 			if (TRAIN_RANDOM)
@@ -1268,80 +1354,78 @@ void UCTSearcher::NextStep()
 				AddRecord(best_move, 0, false);
 		}
 		else {
-			// 探索回数最大の手を見つける
-			unsigned int select_index = 0;
-			int max_count = uct_child[0].move_count;
-			int second_index = 0;
-			int second_count = 0;
-			int child_win_count = 0;
-			int child_lose_count = 0;
-			const int child_num = root_node->child_num;
+			// 訪問数に応じた確率で選択する
+			const auto child_num = root_node->child_num;
+
+			// 訪問回数順にソート
+			std::vector<const child_node_t*> sorted_uct_childs;
+			sorted_uct_childs.reserve(child_num);
+			for (int i = 0; i < child_num; i++)
+				sorted_uct_childs.emplace_back(&uct_child[i]);
+			std::stable_sort(sorted_uct_childs.begin(), sorted_uct_childs.end(), compare_child_node_ptr_descending);
+
+			// 訪問数が最大のノードの価値の一定割合以下は除外
+			const auto max_move_count_child = sorted_uct_childs[0];
+			const int step = (ply - 1) / 2;
+			const float random_cutoff = std::max(0.0f, RANDOM_CUTOFF - RANDOM_CUTOFF_DROP * step);
+			const auto cutoff_threshold = max_move_count_child->win / max_move_count_child->move_count - random_cutoff;
+			vector<double> probabilities;
+			probabilities.reserve(child_num);
+			float r = 20;
+			const float temperature = RANDOM_TEMPERATURE_FINAL;
+			const float reciprocal_temperature = 1.0f / temperature;
 			for (int i = 0; i < child_num; i++) {
-				if (uct_child[i].IsWin()) {
-					// 負けが確定しているノードは選択しない
-					if (child_win_count == i && uct_child[i].move_count > max_count) {
-						// すべて負けの場合は、探索回数が最大の手を選択する
-						select_index = i;
-						max_count = uct_child[i].move_count;
-					}
-					child_win_count++;
-					continue;
-				}
-				else if (uct_child[i].IsLose()) {
-					// 子ノードに一つでも負けがあれば、勝ちなので選択する
-					if (child_lose_count == 0 || uct_child[i].move_count > max_count) {
-						// すべて勝ちの場合は、探索回数が最大の手を選択する
-						select_index = i;
-						max_count = uct_child[i].move_count;
-					}
-					child_lose_count++;
-					continue;
-				}
+				if (sorted_uct_childs[i]->move_count == 0) break;
 
-				if (child_lose_count == 0 && uct_child[i].move_count > max_count) {
-					second_index = select_index;
-					second_count = max_count;
-					select_index = i;
-					max_count = uct_child[i].move_count;
-				}
+				const auto win = sorted_uct_childs[i]->win / sorted_uct_childs[i]->move_count;
+				if (win < cutoff_threshold) break;
+				int move_count = sorted_uct_childs[i]->move_count + sorted_uct_childs[i]->nnrate * 4;
+				float move_count_correction = move_count > 10 ? move_count - 2.0 : 0.5 * log(1 + exp(2 * (move_count - 2)));
+				const auto probability = std::pow(move_count_correction, reciprocal_temperature);
+				probabilities.emplace_back(probability);
+				SPDLOG_TRACE(logger, "gpu_id:{} group_id:{} id:{} {}:{} move_count:{} nnrate:{} win_rate:{} probability:{}",
+					grp->gpu_id, grp->group_id, id, i, sorted_uct_childs[i]->move.toUSI(), sorted_uct_childs[i]->move_count,
+					sorted_uct_childs[i]->nnrate, sorted_uct_childs[i]->win / sorted_uct_childs[i]->move_count, probability);
 			}
-
-			if (RANDOM2 > 1) {
-				// 訪問回数が最大の手が2番目の手のx倍以内の場合にランダムに選択する
-				if (max_count < second_count * RANDOM2) {
-					vector<int> probabilities{ second_count, max_count };
-					discrete_distribution<unsigned int> dist(probabilities.begin(), probabilities.end());
-					const auto i = dist(*mt_64);
-					if (i == 0)
-						select_index = second_index;
-					SPDLOG_DEBUG(logger, "gpu_id:{} group_id:{} id:{} ply:{} {} random2:{},{} selected:{}", grp->gpu_id, grp->group_id, id, ply, pos_root->toSFEN(), second_count, max_count, i);
-				}
-			}
-
+			discrete_distribution<unsigned int> dist(probabilities.begin(), probabilities.end());
+			const auto sorted_select_index = dist(*mt_64);
 			// 選択した着手の勝率の算出
-			best_wp = uct_child[select_index].win / uct_child[select_index].move_count;
-			// 勝ちの場合
-			if (child_lose_count > 0) {
-				best_wp = 1.0f;
+			best_move = sorted_uct_childs[sorted_select_index]->move;
+			best_wp = sorted_uct_childs[sorted_select_index]->win / sorted_uct_childs[sorted_select_index]->move_count;
+			if (id <= 0)
+				SPDLOG_DEBUG(logger, "gpu_id:{} group_id:{} id:{} ply:{} {} bestmove:{} winrate:{}", grp->gpu_id, grp->group_id, id, ply, pos_root->toSFEN(), best_move.toUSI(), best_wp);
+			if (ply == RANDOM_MOVE + 1) {
+				static int count_distribution[7];
+				if (best_wp <= 0.304) count_distribution[0]++;
+				if (0.304 < best_wp && best_wp <= 0.378) count_distribution[1]++; // -625 ~ -375
+				if (0.378 < best_wp && best_wp <= 0.459) count_distribution[2]++; // -375 ~ -125
+				if (0.459 < best_wp && best_wp <= 0.541) count_distribution[3]++; // -125 ~ 125
+				if (0.541 < best_wp && best_wp <= 0.622) count_distribution[4]++;
+				if (0.622 < best_wp && best_wp <= 0.696) count_distribution[5]++;
+				if (0.696 < best_wp) count_distribution[6]++;
+				int a[7];
+				for (int c = 0; c < 7; c++) a[c] = count_distribution[c];
+				if (grp->group_id == 0)
+					SPDLOG_DEBUG(logger, "gpu_id:{} group_id:{} id:{} ply:{} {} winrate:{}: {} {} {} {} {} {} {}",
+						grp->gpu_id, grp->group_id, id, ply, pos_root->toSFEN(), best_wp, a[0], a[1], a[2], a[3], a[4], a[5], a[6]);
 			}
-			// すべて負けの場合
-			else if (child_win_count == child_num) {
-				best_wp = 0.0f;
-			}
-			best_move = uct_child[select_index].move;
-			SPDLOG_DEBUG(logger, "gpu_id:{} group_id:{} id:{} ply:{} {} bestmove:{} winrate:{}", grp->gpu_id, grp->group_id, id, ply, pos_root->toSFEN(), best_move.toUSI(), best_wp);
-
 			{
 				// 勝率が閾値を超えた場合、ゲーム終了
 				const float winrate = (best_wp - 0.5f) * 2.0f;
 				if (WINRATE_THRESHOLD < abs(winrate)) {
-					if (pos_root->turn() == Black)
-						gameResult = (winrate < 0 ? WhiteWin : BlackWin);
-					else
-						gameResult = (winrate < 0 ? BlackWin : WhiteWin);
+					winrate_count += 1;
+					if (winrate_count >= WINRATE_COUNT && winrate > 0.5) {
+						if (pos_root->turn() == Black)
+							gameResult = (winrate < 0 ? WhiteWin : BlackWin);
+						else
+							gameResult = (winrate < 0 ? BlackWin : WhiteWin);
 
-					NextGame();
-					return;
+						NextGame();
+						return;
+					}
+				}
+				else {
+					winrate_count = 0;
 				}
 			}
 
@@ -1368,7 +1452,12 @@ void UCTSearcher::NextPly(const Move move)
 
 	// 着手
 	pos_root->doMove(move, states[ply]);
+	kif += move.toUSI() + " ";
 	ply++;
+	st[ply].insert(make_pair(pos_root->getKey(), ply));
+	st_num[ply] += 1;
+	if (st_num[ply] % 100 == 0 && ply >= 20 && ply % 5 == 0)
+		std::cout << ply << " " << st[ply].size() << "/" << st_num[ply] << std::endl;
 
 	// 千日手の場合
 	switch (pos_root->isDraw(16)) {
@@ -1431,7 +1520,13 @@ void UCTSearcher::NextPly(const Move move)
 
 void UCTSearcher::NextGame()
 {
-	SPDLOG_DEBUG(logger, "gpu_id:{} group_id:{} id:{} ply:{} gameResult:{}", grp->gpu_id, grp->group_id, id, ply, gameResult);
+	if (gameResult == BlackWin) {
+		++black_wins;
+	}
+	if (gameResult == WhiteWin) {
+		++white_wins;
+	}
+	SPDLOG_DEBUG(logger, "gpu_id:{} group_id:{} id:{} ply:{} gameResult:{} black_wins:{} white_wins:{}", grp->gpu_id, grp->group_id, id, ply, gameResult, black_wins, white_wins);
 
 	// 局面出力
 	if (ply >= MIN_MOVE && records.size() > 0) {
@@ -1450,6 +1545,8 @@ void UCTSearcher::NextGame()
 			++draws;
 		}
 	}
+	std::cout << ply << " " << kif << std::endl;
+
 
 	// USIエンジンとの対局結果
 	if (ply >= MIN_MOVE && usi_engine_turn >= 0) {
@@ -1545,7 +1642,7 @@ void make_teacher(const char* recordFileName, const char* outputFileName, const 
 					usi_wins,
 					usi_draws,
 					elapsed_msec / 1000,
-					std::max<s64>(0, (s64)(elapsed_msec*(1.0 - progress) / (progress * 1000))));
+					std::max<s64>(0, (s64)(elapsed_msec * (1.0 - progress) / (progress * 1000))));
 			int running = 0;
 			for (size_t i = 0; i < group_pairs.size(); i++)
 				running += group_pairs[i].Running();
@@ -1610,26 +1707,29 @@ int main(int argc, char* argv[]) {
 			("batchsize", "batchsize", cxxopts::value<int>(batchsize[0]))
 			("positional", "", cxxopts::value<std::vector<int>>())
 			("threads", "thread number", cxxopts::value<int>(threads)->default_value("2"), "num")
-			("random", "random move number", cxxopts::value<int>(RANDOM_MOVE)->default_value("4"), "num")
+			("random", "random move number", cxxopts::value<int>(RANDOM_MOVE)->default_value("30"), "num")
 			("random_cutoff", "random cutoff value", cxxopts::value<float>(RANDOM_CUTOFF)->default_value("0.015"))
 			("random_cutoff_drop", "random cutoff drop", cxxopts::value<float>(RANDOM_CUTOFF_DROP)->default_value("0.001"))
-			("random_temperature", "random temperature", cxxopts::value<float>(RANDOM_TEMPERATURE)->default_value("10.0"))
+			("random_temperature", "random temperature", cxxopts::value<float>(RANDOM_TEMPERATURE)->default_value("1.40"))
+			("random_temperature_final", "random temperature", cxxopts::value<float>(RANDOM_TEMPERATURE_FINAL)->default_value("0.45"))
 			("random_temperature_drop", "random temperature drop", cxxopts::value<float>(RANDOM_TEMPERATURE_DROP)->default_value("1.0"))
 			("train_random", "train random move", cxxopts::value<bool>(TRAIN_RANDOM)->default_value("false"))
 			("random2", "random2", cxxopts::value<float>(RANDOM2)->default_value("0"))
-			("min_move", "minimum move number", cxxopts::value<int>(MIN_MOVE)->default_value("10"), "num")
+			("min_move", "minimum move number", cxxopts::value<int>(MIN_MOVE)->default_value("20"), "num")
 			("max_move", "maximum move number", cxxopts::value<int>(MAX_MOVE)->default_value("320"), "num")
 			("out_max_move", "output the max move game", cxxopts::value<bool>(OUT_MAX_MOVE)->default_value("false"))
 			("root_noise", "add noise to the policy prior at the root", cxxopts::value<int>(ROOT_NOISE)->default_value("3"), "per mille")
-			("threshold", "winrate threshold", cxxopts::value<float>(WINRATE_THRESHOLD)->default_value("0.99"), "rate")
+			("root_alpha", "add noise to the policy prior at the root", cxxopts::value<float>(ALPHA_D)->default_value("0.75"), "per mille")
+			("winrate_count", "winrate_count", cxxopts::value<int>(WINRATE_COUNT)->default_value("5"), "num")
+			("threshold", "winrate threshold", cxxopts::value<float>(WINRATE_THRESHOLD)->default_value("0.85"), "rate")
 			("mate_depth", "mate search depth", cxxopts::value<uint32_t>(ROOT_MATE_SEARCH_DEPTH)->default_value("0"), "depth")
 			("mate_nodes", "mate search max nodes", cxxopts::value<int64_t>(MATE_SEARCH_MAX_NODE)->default_value("100000"), "nodes")
 			("c_init", "UCT parameter c_init", cxxopts::value<float>(c_init)->default_value("1.49"), "val")
 			("c_base", "UCT parameter c_base", cxxopts::value<float>(c_base)->default_value("39470.0"), "val")
 			("c_fpu_reduction", "UCT parameter c_fpu_reduction", cxxopts::value<float>(c_fpu_reduction)->default_value("20"), "val")
-			("c_init_root", "UCT parameter c_init_root", cxxopts::value<float>(c_init_root)->default_value("1.49"), "val")
+			("c_init_root", "UCT parameter c_init_root", cxxopts::value<float>(c_init_root)->default_value("1.60"), "val")
 			("c_base_root", "UCT parameter c_base_root", cxxopts::value<float>(c_base_root)->default_value("39470.0"), "val")
-			("temperature", "Softmax temperature", cxxopts::value<float>(temperature)->default_value("1.66"), "val")
+			("temperature", "Softmax temperature", cxxopts::value<float>(temperature)->default_value("1.60"), "val")
 			("reuse", "reuse sub tree", cxxopts::value<bool>(REUSE_SUBTREE)->default_value("false"))
 			("nn_cache_size", "nn cache size", cxxopts::value<unsigned int>(nn_cache_size)->default_value("8388608"))
 			("split_opponent", "split opponent's hcpe3", cxxopts::value<bool>(SPLIT_OPPONENT)->default_value("false"))
@@ -1663,7 +1763,7 @@ int main(int argc, char* argv[]) {
 			}
 		}
 	}
-	catch (cxxopts::OptionException &e) {
+	catch (cxxopts::OptionException& e) {
 		std::cout << options.usage() << std::endl;
 		std::cerr << e.what() << std::endl;
 		return 0;
