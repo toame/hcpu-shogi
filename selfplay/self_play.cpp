@@ -1721,7 +1721,7 @@ int main(int argc, char* argv[]) {
 			("root_noise", "add noise to the policy prior at the root", cxxopts::value<int>(ROOT_NOISE)->default_value("3"), "per mille")
 			("root_alpha", "add noise to the policy prior at the root", cxxopts::value<float>(ALPHA_D)->default_value("0.75"), "per mille")
 			("winrate_count", "winrate_count", cxxopts::value<int>(WINRATE_COUNT)->default_value("5"), "num")
-			("threshold", "winrate threshold", cxxopts::value<float>(WINRATE_THRESHOLD)->default_value("0.85"), "rate")
+			("threshold", "winrate threshold", cxxopts::value<float>(WINRATE_THRESHOLD)->default_value("0.84"), "rate")
 			("mate_depth", "mate search depth", cxxopts::value<uint32_t>(ROOT_MATE_SEARCH_DEPTH)->default_value("0"), "depth")
 			("mate_nodes", "mate search max nodes", cxxopts::value<int64_t>(MATE_SEARCH_MAX_NODE)->default_value("100000"), "nodes")
 			("c_init", "UCT parameter c_init", cxxopts::value<float>(c_init)->default_value("1.49"), "val")
