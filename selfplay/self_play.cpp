@@ -1802,7 +1802,7 @@ int main(int argc, char* argv[]) {
 	}
 
 	logger->info("threads:{}", threads);
-	logger->info("kldgain:{}", KKLDGAIN_THRESHOLD);
+	logger->info("kldgain:{}", KLDGAIN_THRESHOLD);
 	logger->info("random:{}", RANDOM_MOVE);
 	logger->info("random_cutoff:{}", RANDOM_CUTOFF);
 	logger->info("random_cutoff_drop:{}", RANDOM_CUTOFF_DROP);
