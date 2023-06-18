@@ -1285,7 +1285,7 @@ void UCTSearcher::NextStep()
 			probabilities.reserve(child_num);
 			float temp_c = 1.0;
 			if (best_wp < 0.37) {
-				temp_c = 1.0 - (0.43 - best_wp) * 1.25;
+				temp_c = 1.0 - (0.43 - best_wp) * 1.1;
 			}
 			float r = 20;
 			const float temperature = ((RANDOM_TEMPERATURE * 2) / (1.0 + exp(ply / r))) * temp_c;
@@ -1296,7 +1296,7 @@ void UCTSearcher::NextStep()
 				const auto win = sorted_uct_childs[i]->win / sorted_uct_childs[i]->move_count;
 				// if (win < cutoff_threshold) break;
 				int move_count = sorted_uct_childs[i]->move_count + sorted_uct_childs[i]->nnrate * 4;
-				float move_count_correction = move_count > 10 ? move_count - 3.0 : 0.5 * log(1 + exp(2 * (move_count - 3.0)));
+				float move_count_correction = move_count > 10 ? move_count - 2.2 : 0.5 * log(1 + exp(2 * (move_count - 2.2)));
 
 				const auto probability = std::pow(move_count_correction, reciprocal_temperature);
 				//if (move_count > 10 && id == 0)
