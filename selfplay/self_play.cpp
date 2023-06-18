@@ -41,6 +41,7 @@ set<std::pair<Key, int>> st[321];
 int st_num[321];
 int threads = 2;
 float ALPHA_D = 0.75f;
+float KLDGAIN_THRESHOLD = 0.0000100;
 void random_dirichlet(std::mt19937_64& mt, std::vector<float>& x, const float alpha) {
 	std::gamma_distribution<float> gamma(alpha, 1.0);
 	float sum_y = 0;
@@ -974,8 +975,7 @@ UCTSearcher::InterruptionCheck(const int playout_count, const int extension_time
 		}
 	}
 	kldgain /= 100;
-	//std::cout << "Interruption" << " " << kldgain << " " << playout_count << std::endl;
-	if (kldgain < 0.0000100) {
+	if (kldgain < KLDGAIN_THRESHOLD) {
 		visit_count[playout_count / 100] += 1;
 		int sum_playout = 0;
 		int sum_count = 0;
@@ -984,51 +984,13 @@ UCTSearcher::InterruptionCheck(const int playout_count, const int extension_time
 				sum_playout += visit_count[i] * (i * 100);
 				sum_count += visit_count[i];
 			}
-			std::cout << "average = " << sum_playout / sum_count << std::endl;
-			//for (int i = 0; i < 65; i++) {
-			//	if (visit_count[i] > 0)
-			//		std::cout << i * 100 << " " << visit_count[i] << std::endl;
-			//}
 		}
-		//std::cout << "Interruption" << " " << kldgain << " " << playout_count << std::endl;
 		return true;
 	}
 	for (int i = 0; i < child_num; i++) {
 		prev_visit[i] = uct_child[i].move_count;
 	}
 	return false;
-
-	//// 探索回数が最も多い手と次に多い手を求める
-	//for (int i = 0; i < child_num; i++) {
-	//	if (uct_child[i].move_count > max) {
-	//		second = max;
-	//		max = uct_child[i].move_count;
-	//		max_index = i;
-	//	}
-	//	else if (uct_child[i].move_count > second) {
-	//		second = uct_child[i].move_count;
-	//	}
-	//}
-
-	////// 詰みが見つかった場合は探索を打ち切る
-	////if (uct_child[max_index].IsLose())
-	////	return true;
-
-	//// 残りの探索を全て次善手に費やしても
-	//// 最善手を超えられない場合は探索を打ち切る
-	//if (max - second > rest) {
-	//	// 最善手の探索回数が次善手の探索回数の
-	//	// 1.2倍未満なら探索延長
-	//	if (max_playout_num < playout_num * extension_times && max < second * 1.2) {
-	//		max_playout_num += playout_num / 2;
-	//		return false;
-	//	}
-
-	//	return true;
-	//}
-	//else {
-	//	return false;
-	//}
 }
 
 // 局面の評価
@@ -1315,14 +1277,17 @@ void UCTSearcher::NextStep()
 			std::stable_sort(sorted_uct_childs.begin(), sorted_uct_childs.end(), compare_child_node_ptr_descending);
 
 			// 訪問数が最大のノードの価値の一定割合以下は除外
-			//const auto max_move_count_child = sorted_uct_childs[0];
-			//const int step = (ply - 1) / 2;
-			//const float random_cutoff = std::max(0.0f, RANDOM_CUTOFF - RANDOM_CUTOFF_DROP * step);
-			//const auto cutoff_threshold = max_move_count_child->win / max_move_count_child->move_count - random_cutoff;
+			const auto max_move_count_child = sorted_uct_childs[0];
+			const int step = (ply - 1) / 2;
+			const auto best_wp_ = max_move_count_child->win / max_move_count_child->move_count;
 			vector<double> probabilities;
 			probabilities.reserve(child_num);
+			float temp_c = 1.0;
+			if (best_wp < 0.43) {
+				temp_c = 1.0 - (0.45 - best_wp) * 2;
+			}
 			float r = 20;
-			const float temperature = (RANDOM_TEMPERATURE * 2) / (1.0 + exp(ply / r));
+			const float temperature = (RANDOM_TEMPERATURE * 2) / (1.0 + exp(ply / r)) * temp_c;
 			const float reciprocal_temperature = 1.0f / temperature;
 			for (int i = 0; i < std::min<int>(8, child_num); i++) {
 				if (sorted_uct_childs[i]->move_count == 0) break;
@@ -1330,7 +1295,7 @@ void UCTSearcher::NextStep()
 				const auto win = sorted_uct_childs[i]->win / sorted_uct_childs[i]->move_count;
 				// if (win < cutoff_threshold) break;
 				int move_count = sorted_uct_childs[i]->move_count + sorted_uct_childs[i]->nnrate * 4;
-				float move_count_correction = move_count > 10 ? move_count - 2.0 : 0.5 * log(1 + exp(2 * (move_count - 2)));
+				float move_count_correction = move_count > 10 ? move_count - 3.0 : 0.5 * log(1 + exp(2 * (move_count - 3.0)));
 
 				const auto probability = std::pow(move_count_correction, reciprocal_temperature);
 				//if (move_count > 10 && id == 0)
@@ -1707,6 +1672,7 @@ int main(int argc, char* argv[]) {
 			("batchsize", "batchsize", cxxopts::value<int>(batchsize[0]))
 			("positional", "", cxxopts::value<std::vector<int>>())
 			("threads", "thread number", cxxopts::value<int>(threads)->default_value("2"), "num")
+			("kldgain", "thread number", cxxopts::value<float>(KLDGAIN_THRESHOLD)->default_value("0.0000100"), "num")
 			("random", "random move number", cxxopts::value<int>(RANDOM_MOVE)->default_value("30"), "num")
 			("random_cutoff", "random cutoff value", cxxopts::value<float>(RANDOM_CUTOFF)->default_value("0.015"))
 			("random_cutoff_drop", "random cutoff drop", cxxopts::value<float>(RANDOM_CUTOFF_DROP)->default_value("0.001"))
