@@ -1429,7 +1429,7 @@ void UCTSearcher::NextPly(const Move move)
 	if (ply <= 80 && ply % 5 == 0) {
 		st[ply].insert(make_pair(pos_root->getKey(), ply));
 		st_num[ply] += 1;
-		if (st_num[ply] % 100 == 0 && ply >= 20 && ply % 5 == 0)
+		if (st_num[ply] % 100 == 0 && ply % 5 == 0)
 			std::cout << ply << " " << st[ply].size() << "/" << st_num[ply] << std::endl;
 	}
 
