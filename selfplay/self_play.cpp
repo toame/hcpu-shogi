@@ -1386,7 +1386,7 @@ void UCTSearcher::NextStep()
 					if (winrate >= abs(0.98)) {
 						winrate_count += 1;
 					}
-					if (winrate_count >= WINRATE_COUNT && winrate < 0.5) {
+					if (winrate_count >= WINRATE_COUNT && best_wp < 0.5) {
 						if (pos_root->turn() == Black)
 							gameResult = WhiteWin;
 						else
