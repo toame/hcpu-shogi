@@ -1283,11 +1283,11 @@ void UCTSearcher::NextStep()
 			vector<double> probabilities;
 			probabilities.reserve(child_num);
 			float temp_c = 1.0;
-			if (best_wp < 0.43) {
-				temp_c = 1.0 - (0.45 - best_wp) * 2;
+			if (best_wp < 0.40) {
+				temp_c = 1.0 - (0.45 - best_wp);
 			}
 			float r = 20;
-			const float temperature = (RANDOM_TEMPERATURE * 2) / (1.0 + exp(ply / r)) * temp_c;
+			const float temperature = ((RANDOM_TEMPERATURE * 2) / (1.0 + exp(ply / r))) * temp_c;
 			const float reciprocal_temperature = 1.0f / temperature;
 			for (int i = 0; i < std::min<int>(8, child_num); i++) {
 				if (sorted_uct_childs[i]->move_count == 0) break;
@@ -1379,7 +1379,7 @@ void UCTSearcher::NextStep()
 				const float winrate = (best_wp - 0.5f) * 2.0f;
 				if (WINRATE_THRESHOLD < abs(winrate)) {
 					winrate_count += 1;
-					if (winrate_count >= WINRATE_COUNT && winrate > 0.5) {
+					if (winrate_count >= WINRATE_COUNT && winrate < 0.5) {
 						if (pos_root->turn() == Black)
 							gameResult = (winrate < 0 ? WhiteWin : BlackWin);
 						else
@@ -1802,6 +1802,7 @@ int main(int argc, char* argv[]) {
 	}
 
 	logger->info("threads:{}", threads);
+	logger->info("kldgain:{}", KKLDGAIN_THRESHOLD);
 	logger->info("random:{}", RANDOM_MOVE);
 	logger->info("random_cutoff:{}", RANDOM_CUTOFF);
 	logger->info("random_cutoff_drop:{}", RANDOM_CUTOFF_DROP);
