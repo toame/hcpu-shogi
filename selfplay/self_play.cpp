@@ -1388,9 +1388,9 @@ void UCTSearcher::NextStep()
 					}
 					if (winrate_count >= WINRATE_COUNT && winrate < 0.5) {
 						if (pos_root->turn() == Black)
-							gameResult = (winrate < 0 ? WhiteWin : BlackWin);
+							gameResult = WhiteWin;
 						else
-							gameResult = (winrate < 0 ? BlackWin : WhiteWin);
+							gameResult = BlackWin;
 
 						NextGame();
 						return;
