@@ -1380,10 +1380,10 @@ void UCTSearcher::NextStep()
 				const float winrate = abs(best_wp - 0.5f) + 0.5;
 				if (WINRATE_THRESHOLD <= winrate) {
 					winrate_count += 1;
-					if (winrate_count >= abs(0.94)) {
+					if (winrate >= abs(0.94)) {
 						winrate_count += 1;
 					}
-					if (winrate_count >= abs(0.98)) {
+					if (winrate >= abs(0.98)) {
 						winrate_count += 1;
 					}
 					if (winrate_count >= WINRATE_COUNT && winrate < 0.5) {
