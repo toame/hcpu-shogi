@@ -1287,7 +1287,7 @@ void UCTSearcher::NextStep()
 			if (best_wp_ < 0.40) {
 				temp_c = 1.0 - (0.45 - best_wp_) * 1.5;
 			}
-			float r = 20;
+			float r = 25;
 			const float temperature = ((RANDOM_TEMPERATURE * 2) / (1.0 + exp(ply / r))) * temp_c;
 			const float reciprocal_temperature = 1.0f / temperature;
 			for (int i = 0; i < std::min<int>(10, child_num); i++) {
