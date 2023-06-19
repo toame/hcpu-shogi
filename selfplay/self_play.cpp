@@ -1059,7 +1059,7 @@ void UCTSearcher::Playout(visitor_t& visitor)
 					ifs.read(reinterpret_cast<char*>(&hcp), sizeof(hcp));
 				}
 				setPosition(*pos_root, hcp);
-				pos_root = new Position(DefaultStartPositionSFEN, s.thisptr);
+				pos_root->set(DefaultStartPositionSFEN);
 				kif.clear();
 				kif += "position ";
 				kif += pos_root->toSFEN() + " moves ";
