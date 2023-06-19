@@ -347,6 +347,7 @@ public:
 		pos_root = new Position(DefaultStartPositionSFEN, s.thisptr);
 		usi_engine_turn = (grp->usi_engines.size() > 0 && id < usi_engine_num) ? rnd(*mt) % 2 : -1;
 		prev_visit.reserve(UCT_CHILD_MAX);
+		v_noise.reserve(UCT_CHILD_MAX);
 	}
 	UCTSearcher(UCTSearcher&& o) : nn_cache(o.nn_cache) {} // not use
 	~UCTSearcher() {
@@ -404,6 +405,7 @@ private:
 
 	// ノイズにより選んだ回数
 	std::vector<int> prev_visit;
+	std::vector<float> v_noise;
 
 	// 詰み探索のステータス
 	MateSearchEntry::State mate_status;
@@ -1072,8 +1074,8 @@ void UCTSearcher::Playout(visitor_t& visitor)
 
 			// ノイズ回数初期化
 			prev_visit.resize(root_node->child_num);
+			v_noise.resize(root_node->child_num);
 			std::fill(prev_visit.begin(), prev_visit.end(), 0);
-			vector<float> v_noise(root_node->child_num);
 			random_dirichlet(*mt_64, v_noise, 0.15f);
 			for (int i = 0; i < root_node->child_num; i++) {
 				root_node->child[i].noise = v_noise[i];
