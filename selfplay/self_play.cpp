@@ -37,8 +37,6 @@ using namespace std;
 
 // 候補手の最大数(盤上全体)
 constexpr int UCT_CHILD_MAX = 593;
-set<std::pair<Key, int>> st[321];
-int st_num[321];
 int threads = 2;
 float ALPHA_D = 0.75f;
 float KLDGAIN_THRESHOLD = 0.0000100;
@@ -348,7 +346,7 @@ public:
 		states(MAX_MOVE + 1) {
 		pos_root = new Position(DefaultStartPositionSFEN, s.thisptr);
 		usi_engine_turn = (grp->usi_engines.size() > 0 && id < usi_engine_num) ? rnd(*mt) % 2 : -1;
-		noise_count.reserve(UCT_CHILD_MAX);
+		prev_visit.reserve(UCT_CHILD_MAX);
 	}
 	UCTSearcher(UCTSearcher&& o) : nn_cache(o.nn_cache) {} // not use
 	~UCTSearcher() {
@@ -405,7 +403,6 @@ private:
 	Position* pos_root;
 
 	// ノイズにより選んだ回数
-	std::vector<int> noise_count;
 	std::vector<int> prev_visit;
 
 	// 詰み探索のステータス
@@ -882,18 +879,6 @@ UCTSearcher::SelectMaxUcbChild(child_node_t* parent, uct_node_t* current)
 			u = sqrt_sum / (1 + move_count);
 		}
 
-
-		//if (parent == nullptr) {
-		//	const float ucb_value_nonoise = q + c * u * rate;
-		//	// ノイズがない場合の選択
-		//	if (ucb_value_nonoise > max_value_nonoise) {
-		//		max_value_nonoise = ucb_value_nonoise;
-		//		max_child_nonoise = i;
-		//	}
-		//	// ランダムに確率を上げる
-		//	// if (rnd(*mt) < ROOT_NOISE)
-		//	//	rate = (rate + 1.0f) / 2.0f;
-		//}
 		float rate = uct_child[i].nnrate;
 		float noise_rate = parent == nullptr ? uct_child[i].nnrate * ALPHA_D + (1.0f - ALPHA_D) * uct_child[i].noise : uct_child[i].nnrate;
 		const float ucb_value = q + c * u * noise_rate;
@@ -914,11 +899,6 @@ UCTSearcher::SelectMaxUcbChild(child_node_t* parent, uct_node_t* current)
 		current->visited_nnrate += uct_child[max_child].nnrate;
 	}
 
-	// ノイズにより選んだ回数
-	if (parent == nullptr && max_child != max_child_nonoise) {
-		noise_count[max_child]++;
-	}
-
 	return max_child;
 }
 
@@ -936,7 +916,6 @@ UCTSearcherGroup::QueuingNode(const Position* pos, uct_node_t* node, float* valu
 	policy_value_batch[current_policy_value_batch_index] = { node, pos->turn(), pos->getKey(), value_win };
 	current_policy_value_batch_index++;
 }
-int visit_count[65];
 //////////////////////////
 //  探索打ち止めの確認  //
 //////////////////////////
@@ -976,15 +955,6 @@ UCTSearcher::InterruptionCheck(const int playout_count, const int extension_time
 	}
 	kldgain /= 100;
 	if (kldgain < KLDGAIN_THRESHOLD) {
-		visit_count[playout_count / 100] += 1;
-		int sum_playout = 0;
-		int sum_count = 0;
-		if (visit_count[playout_count / 100] % 100 == 0) {
-			for (int i = 0; i < 65; i++) {
-				sum_playout += visit_count[i] * (i * 100);
-				sum_count += visit_count[i];
-			}
-		}
 		return true;
 	}
 	for (int i = 0; i < child_num; i++) {
@@ -1052,13 +1022,12 @@ void UCTSearcher::Playout(visitor_t& visitor)
 			if (ply == 0) {
 				ply = 1;
 
-				// 開始局面を局面集からランダムに選ぶ
-				{
-					std::unique_lock<Mutex> lock(imutex);
-					ifs.seekg(inputFileDist(*mt_64) * sizeof(HuffmanCodedPos), std::ios_base::beg);
-					ifs.read(reinterpret_cast<char*>(&hcp), sizeof(hcp));
-				}
-				setPosition(*pos_root, hcp);
+				//// 開始局面を局面集からランダムに選ぶ
+				//{
+				//	std::unique_lock<Mutex> lock(imutex);
+				//	ifs.seekg(inputFileDist(*mt_64) * sizeof(HuffmanCodedPos), std::ios_base::beg);
+				//	ifs.read(reinterpret_cast<char*>(&hcp), sizeof(hcp));
+				//}
 				pos_root->set(DefaultStartPositionSFEN);
 				kif.clear();
 				kif += "position ";
@@ -1102,9 +1071,8 @@ void UCTSearcher::Playout(visitor_t& visitor)
 			}
 
 			// ノイズ回数初期化
-			noise_count.resize(root_node->child_num);
 			prev_visit.resize(root_node->child_num);
-			std::fill(noise_count.begin(), noise_count.end(), 0);
+			std::fill(prev_visit.begin(), prev_visit.end(), 0);
 			vector<float> v_noise(root_node->child_num);
 			random_dirichlet(*mt_64, v_noise, 0.15f);
 			for (int i = 0; i < root_node->child_num; i++) {
@@ -1426,12 +1394,12 @@ void UCTSearcher::NextPly(const Move move)
 	pos_root->doMove(move, states[ply]);
 	kif += move.toUSI() + " ";
 	ply++;
-	if (ply <= 80 && ply % 5 == 0) {
-		st[ply].insert(make_pair(pos_root->getKey(), ply));
-		st_num[ply] += 1;
-		if (st_num[ply] % 100 == 0 && ply % 5 == 0)
-			std::cout << ply << " " << st[ply].size() << "/" << st_num[ply] << std::endl;
-	}
+	//if (ply <= 80 && ply % 5 == 0) {
+	//	st[ply].insert(make_pair(pos_root->getKey(), ply));
+	//	st_num[ply] += 1;
+	//	if (st_num[ply] % 100 == 0 && ply % 5 == 0)
+	//		std::cout << ply << " " << st[ply].size() << "/" << st_num[ply] << std::endl;
+	//}
 
 	// 千日手の場合
 	switch (pos_root->isDraw(16)) {
