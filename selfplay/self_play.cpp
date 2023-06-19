@@ -1290,7 +1290,7 @@ void UCTSearcher::NextStep()
 			float r = 20;
 			const float temperature = ((RANDOM_TEMPERATURE * 2) / (1.0 + exp(ply / r))) * temp_c;
 			const float reciprocal_temperature = 1.0f / temperature;
-			for (int i = 0; i < std::min<int>(8, child_num); i++) {
+			for (int i = 0; i < std::min<int>(10, child_num); i++) {
 				if (sorted_uct_childs[i]->move_count == 0) break;
 
 				const auto win = sorted_uct_childs[i]->win / sorted_uct_childs[i]->move_count;
