@@ -1023,10 +1023,6 @@ void UCTSearcher::Playout(visitor_t& visitor)
 			// 新しいゲーム開始
 			if (ply == 0) {
 				ply = 1;
-				//if (id == 0) {
-				//	std::cout << "nn_cache_clear:" << grp->gpu_id << " " << grp->group_id << " " << id << std::endl;
-				//	nn_cache.Clear();
-				//}
 				//// 開始局面を局面集からランダムに選ぶ
 				//{
 				//	std::unique_lock<Mutex> lock(imutex);
