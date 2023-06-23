@@ -91,6 +91,9 @@ constexpr int64_t MATE_SEARCH_MIN_NODE = 10000;
 // モデルのパス
 string model_path;
 
+set<Key> st[100];
+int st_count[100];
+
 int playout_num = 1000;
 
 // USIエンジンのパス
@@ -436,12 +439,60 @@ private:
 			eval
 		);
 		if (trainning) {
+
 			const auto child = root_node->child.get();
 			record.candidates.reserve(root_node->child_num);
 			const size_t child_num = root_node->child_num;
-			for (size_t i = 0; i < child_num; ++i) {
-				// ノイズにより選んだ回数を除く
-				const auto move_count = child[i].move_count;
+			const child_node_t* uct_child = root_node->child.get();
+			int max_child = 0, max_child_nonoise = 0;
+			const int sum = root_node->move_count;
+			const float sqrt_sum = sqrtf((float)sum);
+			const float c = FastLog((sum + c_base_root + 1.0f) / c_base_root) + c_init_root;
+			const float init_u = sum == 0 ? 1.0f : sqrt_sum;
+
+			// 探索回数が最も多い手と次に多い手を求める
+			int max_index = 0;
+			int max = 0;
+			float max_value = 0;
+			float max_ucb = 0;
+			for (int i = 0; i < child_num; i++) {
+				const WinType win = uct_child[i].win;
+				const int move_count = uct_child[i].move_count;
+
+				float q = (float)(win / move_count);
+				float u = sqrt_sum / (1 + move_count);
+
+				float rate = uct_child[i].nnrate;
+				const float ucb_value = q + c * u * rate;
+
+				if (child[i].move_count > max) {
+					max = child[i].move_count;
+					max_index = i;
+					max_value = child[i].win / child[i].move_count;
+					max_ucb = ucb_value;
+				}
+			}
+
+			// UCB値最大の手を求める
+			for (int i = 0; i < child_num; i++) {
+				const WinType win = uct_child[i].win;
+				int move_count = uct_child[i].move_count;
+				float rate = uct_child[i].nnrate;
+				int prev_move_count = move_count;
+				while (max_index != i && move_count > 0) {
+					float q = (float)(win / move_count);
+					float u = sqrt_sum / (1 + move_count);
+					const float ucb_value = q + c * u * rate;
+					if (max_value > ucb_value) {
+						move_count--;
+					}
+					else {
+						break;
+					}
+				}
+				//if (prev_move_count - move_count > 5 || (move_count > 1 && prev_move_count/move_count >= 2)) {
+				//	std::cerr << max << " " << prev_move_count << " " << move_count << " " << rate << " " << uct_child[i].noise << std::endl;
+ 			//	}
 				if (move_count > 0) {
 					record.candidates.emplace_back(
 						static_cast<u16>(child[i].move.value()),
@@ -933,6 +984,10 @@ UCTSearcher::InterruptionCheck(const int playout_count, const int extension_time
 	if (playout_count % 100 != 0 || playout_count == 0)
 		return false;
 
+	if (extension_times == 0 && playout_count >= max_playout_num / 4) {
+		return true;
+	}
+
 	if (playout_count >= max_playout_num) {
 		std::cout << "Interruption" << " " << playout_count << std::endl;
 		return true;
@@ -950,7 +1005,7 @@ UCTSearcher::InterruptionCheck(const int playout_count, const int extension_time
 	for (int i = 0; i < child_num; i++) {
 		float old_p = prev_visit[i] / sum1;
 		float new_p = uct_child[i].move_count / sum2;
-		
+
 		if (old_p != 0 && new_p != 0) {
 			kldgain += old_p * log(old_p / new_p);
 		}
@@ -1253,8 +1308,13 @@ void UCTSearcher::NextStep()
 			vector<double> probabilities;
 			probabilities.reserve(child_num);
 			float temp_c = 1.0;
-			if (best_wp_ < 0.38) {
-				temp_c = 1.0 - (0.45 - best_wp_) * 2.0;
+			float lower_limit = 0.45 + (pos_root->turn() == White ? -0.03 : 0.03);
+			float upper_limit = 0.55 + (pos_root->turn() == White ? -0.03 : 0.03);
+			if (best_wp_ < lower_limit) {
+				temp_c = max(0.2, 1.0 - (lower_limit - best_wp_) * 5.0);
+			}
+			if (best_wp_ > upper_limit) {
+				temp_c = min(2.0, 1.0 + (best_wp_ - upper_limit) * 5.0);
 			}
 			float r = 25;
 			const float temperature = ((RANDOM_TEMPERATURE * 2) / (1.0 + exp(ply / r))) * temp_c;
@@ -1265,7 +1325,7 @@ void UCTSearcher::NextStep()
 				const auto win = sorted_uct_childs[i]->win / sorted_uct_childs[i]->move_count;
 				// if (win < cutoff_threshold) break;
 				int move_count = sorted_uct_childs[i]->move_count + sorted_uct_childs[i]->nnrate * 4;
-				float move_count_correction = move_count > 10 ? move_count - 2.8 : 0.5 * log(1 + exp(2 * (move_count - 2.8)));
+				float move_count_correction = move_count > 10 ? move_count - 3.0 : 0.5 * log(1 + exp(2 * (move_count - 3.0)));
 
 				const auto probability = std::pow(move_count_correction, reciprocal_temperature);
 				//if (move_count > 10 && id == 0)
@@ -1395,12 +1455,12 @@ void UCTSearcher::NextPly(const Move move)
 	pos_root->doMove(move, states[ply]);
 	kif += move.toUSI() + " ";
 	ply++;
-	//if (ply <= 80 && ply % 5 == 0) {
-	//	st[ply].insert(make_pair(pos_root->getKey(), ply));
-	//	st_num[ply] += 1;
-	//	if (st_num[ply] % 100 == 0 && ply % 5 == 0)
-	//		std::cout << ply << " " << st[ply].size() << "/" << st_num[ply] << std::endl;
-	//}
+	if (ply <= 80 && ply % 5 == 0) {
+		st[ply].insert(pos_root->getKey());
+		st_count[ply] += 1;
+		if (st_count[ply] % 100 == 0 && ply % 5 == 0)
+			std::cout << ply << " " << st[ply].size() << "/" << st_count[ply] << std::endl;
+	}
 
 	// 千日手の場合
 	switch (pos_root->isDraw(16)) {
