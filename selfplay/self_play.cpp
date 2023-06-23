@@ -1253,8 +1253,8 @@ void UCTSearcher::NextStep()
 			vector<double> probabilities;
 			probabilities.reserve(child_num);
 			float temp_c = 1.0;
-			if (best_wp_ < 0.40) {
-				temp_c = 1.0 - (0.45 - best_wp_) * 1.5;
+			if (best_wp_ < 0.38) {
+				temp_c = 1.0 - (0.45 - best_wp_) * 2.0;
 			}
 			float r = 25;
 			const float temperature = ((RANDOM_TEMPERATURE * 2) / (1.0 + exp(ply / r))) * temp_c;
