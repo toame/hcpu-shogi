@@ -346,6 +346,9 @@ public:
 		max_playout_num(playout_num),
 		playout(0),
 		ply(0),
+		random_temperature_black(1.4),
+		random_temperature_white(1.4),
+		first_normal_move(true),
 		states(MAX_MOVE + 1) {
 		pos_root = new Position(DefaultStartPositionSFEN, s.thisptr);
 		usi_engine_turn = (grp->usi_engines.size() > 0 && id < usi_engine_num) ? rnd(*mt) % 2 : -1;
@@ -397,6 +400,9 @@ private:
 	int playout;
 	int ply;
 	int winrate_count = 0;
+	bool first_normal_move = true;
+	float random_temperature_black = 1.4;
+	float random_temperature_white = 1.4;
 	GameResult gameResult;
 	u8 reason;
 
@@ -465,7 +471,7 @@ private:
 				float rate = uct_child[i].nnrate;
 				const float ucb_value = q + c * u * rate;
 
-				if (child[i].move_count > max) {
+				if ((max <= 100 && child[i].move_count > max) || (child[i].move_count > 100 && max_ucb < ucb_value)) {
 					max = child[i].move_count;
 					max_index = i;
 					max_value = child[i].win / child[i].move_count;
@@ -1078,6 +1084,9 @@ void UCTSearcher::Playout(visitor_t& visitor)
 			// 新しいゲーム開始
 			if (ply == 0) {
 				ply = 1;
+				first_normal_move = true;
+				random_temperature_black = RANDOM_TEMPERATURE;
+				random_temperature_white = RANDOM_TEMPERATURE * 0.98f;
 				//// 開始局面を局面集からランダムに選ぶ
 				//{
 				//	std::unique_lock<Mutex> lock(imutex);
@@ -1109,12 +1118,12 @@ void UCTSearcher::Playout(visitor_t& visitor)
 						usi_engine_turn = rnd(*mt) % 2;
 
 					if (usi_engine_turn == 1 && RANDOM_MOVE == 0) {
-						grp->usi_engines[id % usi_threads].ThinkAsync(id / usi_threads, *pos_root, usi_position, usi_byoyomi);
+						grp->usi_engines[id % usi_threads].ThinkAsync(id / usi_threads, *pos_root, usi_position, int(usi_byoyomi/1000));
 						return;
 					}
 				}
 			}
-			else if (ply % 2 == usi_engine_turn && ply > RANDOM_MOVE) {
+			else if (ply % 2 == usi_engine_turn && ((ply > RANDOM_MOVE && random_temperature_black + random_temperature_white <= 1.2) || ply > 40)) {
 				return;
 			}
 
@@ -1197,7 +1206,7 @@ void UCTSearcher::Playout(visitor_t& visitor)
 void UCTSearcher::NextStep()
 {
 	// USIエンジン
-	if (ply % 2 == usi_engine_turn && ply > RANDOM_MOVE) {
+	if (ply % 2 == usi_engine_turn && ((ply > RANDOM_MOVE && random_temperature_black + random_temperature_white <= 1.2) || ply > 40)) {
 		const auto& result = grp->usi_engines[id % usi_threads].ThinkDone(id / usi_threads);
 		if (result.move == Move::moveNone())
 			return;
@@ -1237,7 +1246,7 @@ void UCTSearcher::NextStep()
 				gameResult = (pos_root->turn() == Black) ? BlackWin : WhiteWin;
 
 				// 局面追加（ランダム局面は除く）
-				if (ply > RANDOM_MOVE)
+				if (((ply > RANDOM_MOVE && random_temperature_black + random_temperature_white <= 1.2) || ply > 40))
 					AddRecord(grp->GetMateSearchMove(id), 30000, false);
 
 				NextGame();
@@ -1256,7 +1265,7 @@ void UCTSearcher::NextStep()
 	playout++;
 
 	// 探索終了判定
-	if (InterruptionCheck(playout, (ply > RANDOM_MOVE) ? EXTENSION_TIMES : 0)) {
+	if (InterruptionCheck(playout, (((ply > RANDOM_MOVE && random_temperature_black + random_temperature_white <= 1.2) || ply > 40)) ? EXTENSION_TIMES : 0)) {
 		// 平均プレイアウト数を計測
 		sum_playouts += playout;
 		++sum_nodes;
@@ -1274,7 +1283,7 @@ void UCTSearcher::NextStep()
 				gameResult = (pos_root->turn() == Black) ? BlackWin : WhiteWin;
 
 				// 局面追加（初期局面は除く）
-				if (ply > RANDOM_MOVE)
+				if (((ply > RANDOM_MOVE && random_temperature_black + random_temperature_white <= 1.2) || ply > 40))
 					AddRecord(grp->GetMateSearchMove(id), 30000, false);
 
 				NextGame();
@@ -1290,7 +1299,7 @@ void UCTSearcher::NextStep()
 		const child_node_t* uct_child = root_node->child.get();
 		float best_wp;
 		Move best_move;
-		if (ply <= RANDOM_MOVE) {
+		if (!(((ply > RANDOM_MOVE && random_temperature_black + random_temperature_white <= 1.2) || ply > 40))) {
 			// N手までは訪問数に応じた確率で選択する
 			const auto child_num = root_node->child_num;
 
@@ -1308,25 +1317,28 @@ void UCTSearcher::NextStep()
 			vector<double> probabilities;
 			probabilities.reserve(child_num);
 			float temp_c = 1.0;
-			float lower_limit = 0.45 + (pos_root->turn() == White ? -0.03 : 0.03);
-			float upper_limit = 0.55 + (pos_root->turn() == White ? -0.03 : 0.03);
+			float lower_limit = 0.430 + (pos_root->turn() == White ? -0.03 : 0.03);
+			float upper_limit = 0.570 + (pos_root->turn() == White ? -0.03 : 0.03);
 			if (best_wp_ < lower_limit) {
-				temp_c = max(0.2, 1.0 - (lower_limit - best_wp_) * 5.0);
+				temp_c = max(0.2, 0.9 - (lower_limit - best_wp_) * 5.0);
 			}
 			if (best_wp_ > upper_limit) {
-				temp_c = min(2.0, 1.0 + (best_wp_ - upper_limit) * 5.0);
+				temp_c = min(2.0, 1.1 + (best_wp_ - upper_limit) * 5.0);
 			}
-			float r = 25;
-			const float temperature = ((RANDOM_TEMPERATURE * 2) / (1.0 + exp(ply / r))) * temp_c;
+			//float r = 25;
+			//const float temperature = ((RANDOM_TEMPERATURE * 2) / (1.0 + exp(ply / r))) * temp_c;
+			const float temperature = (pos_root->turn() == Black) ? (random_temperature_black) : random_temperature_white;
 			const float reciprocal_temperature = 1.0f / temperature;
+			
 			for (int i = 0; i < std::min<int>(10, child_num); i++) {
 				if (sorted_uct_childs[i]->move_count == 0) break;
-
 				const auto win = sorted_uct_childs[i]->win / sorted_uct_childs[i]->move_count;
-				// if (win < cutoff_threshold) break;
+				if (win < best_wp_ - 0.045) continue;
+				if (win < lower_limit && win < best_wp_ - 0.015) continue;
 				int move_count = sorted_uct_childs[i]->move_count + sorted_uct_childs[i]->nnrate * 4;
-				float move_count_correction = move_count > 10 ? move_count - 3.0 : 0.5 * log(1 + exp(2 * (move_count - 3.0)));
-
+				float correct_num = win >= lower_limit ? 12.5 : 25.0;
+				//float move_count_correction = move_count > 20 ? move_count - 10.5 : 1.25 * log(1 + exp(0.8 * (move_count - 10.5)));
+				float move_count_correction = min<float>(move_count, (move_count - correct_num) > 20 ? move_count : (4.0 * FastLog(1 + exp(0.5 * (move_count - correct_num)))) );
 				const auto probability = std::pow(move_count_correction, reciprocal_temperature);
 				//if (move_count > 10 && id == 0)
 				//	std::cout << id << " " << ply << " " << move_count << " " << move_count_correction << " " << probability << " " << temperature << std::endl;
@@ -1340,8 +1352,19 @@ void UCTSearcher::NextStep()
 			const auto sorted_select_index = dist(*mt_64);
 			best_move = sorted_uct_childs[sorted_select_index]->move;
 			best_wp = sorted_uct_childs[sorted_select_index]->win / sorted_uct_childs[sorted_select_index]->move_count;
-			//SPDLOG_DEBUG(logger, "gpu_id:{} group_id:{} id:{} ply:{} {} random_move:{} winrate:{}", grp->gpu_id, grp->group_id, id, ply, pos_root->toSFEN(), best_move.toUSI(), best_wp);
-
+			int sum_move_count = root_node->move_count;
+			float rate = float(sorted_uct_childs[sorted_select_index]->move_count) / sum_move_count;
+			const float temperature_drop = RANDOM_TEMPERATURE_DROP * -FastLog(min(1.0, rate * 1.6));
+			if (pos_root->turn() == Black) {
+				random_temperature_black = max(RANDOM_TEMPERATURE_FINAL, random_temperature_black - temperature_drop);
+			}
+			else {
+				random_temperature_white = max(RANDOM_TEMPERATURE_FINAL, random_temperature_white - temperature_drop);
+			}
+			if (grp->group_id == 0 && id < 8) {
+				SPDLOG_DEBUG(logger, "gpu_id:{} group_id:{} id:{} ply:{} {} random_move:{} winrate:{:.3f} temperature:{:.3f} rate:{:.4f} drop:{:.4f}", grp->gpu_id, grp->group_id, id, ply, pos_root->toSFEN(), best_move.toUSI(), best_wp, temperature, rate, temperature_drop);
+				//SPDLOG_DEBUG(logger, "gpu_id:{} group_id:{} id:{} ply:{} {} random_move:{} winrate:{:.3f} temperature:{:.3f} drop:{:.4f}", grp->gpu_id, grp->group_id, id, ply, pos_root->toSFEN(), best_move.toUSI(), best_wp, temperature, temperature_drop);
+			}
 			// 局面追加
 			if (TRAIN_RANDOM)
 				AddRecord(best_move, value_to_score(best_wp), true);
@@ -1375,7 +1398,7 @@ void UCTSearcher::NextStep()
 				const auto win = sorted_uct_childs[i]->win / sorted_uct_childs[i]->move_count;
 				if (win < cutoff_threshold) break;
 				int move_count = sorted_uct_childs[i]->move_count + sorted_uct_childs[i]->nnrate * 4;
-				float move_count_correction = move_count > 10 ? move_count - 2.0 : 0.5 * log(1 + exp(2 * (move_count - 2)));
+				float move_count_correction = move_count > 10 ? move_count - 2.5 : 0.5 * log(1 + exp(2 * (move_count - 2.5)));
 				const auto probability = std::pow(move_count_correction, reciprocal_temperature);
 				probabilities.emplace_back(probability);
 				SPDLOG_TRACE(logger, "gpu_id:{} group_id:{} id:{} {}:{} move_count:{} nnrate:{} win_rate:{} probability:{}",
@@ -1389,8 +1412,12 @@ void UCTSearcher::NextStep()
 			best_wp = sorted_uct_childs[sorted_select_index]->win / sorted_uct_childs[sorted_select_index]->move_count;
 			if (id <= 0)
 				SPDLOG_DEBUG(logger, "gpu_id:{} group_id:{} id:{} ply:{} {} bestmove:{} winrate:{}", grp->gpu_id, grp->group_id, id, ply, pos_root->toSFEN(), best_move.toUSI(), best_wp);
-			if (ply == RANDOM_MOVE + 1) {
+			if (first_normal_move) {
+				first_normal_move = false;
 				static int count_distribution[7];
+				if (pos_root->turn() == White) {
+					best_wp = 1.0 - best_wp;
+				}
 				if (best_wp <= 0.304) count_distribution[0]++;
 				if (0.304 < best_wp && best_wp <= 0.378) count_distribution[1]++; // -625 ~ -375
 				if (0.378 < best_wp && best_wp <= 0.459) count_distribution[2]++; // -375 ~ -125
@@ -1403,7 +1430,18 @@ void UCTSearcher::NextStep()
 				if (grp->group_id == 0)
 					SPDLOG_DEBUG(logger, "gpu_id:{} group_id:{} id:{} ply:{} {} winrate:{}: {} {} {} {} {} {} {}",
 						grp->gpu_id, grp->group_id, id, ply, pos_root->toSFEN(), best_wp, a[0], a[1], a[2], a[3], a[4], a[5], a[6]);
+				// randomプレイ終了後の評価値が微妙の場合はすぐ終了する。
+				if ((pos_root->turn() == Black && (best_wp < 0.29 || 0.76 < best_wp)) || (pos_root->turn() == White && (best_wp < 0.24 || 0.71 < best_wp))) {
+					SPDLOG_DEBUG(logger, "gpu_id:{} group_id:{} id:{} ply:{} {} winrate:{} Interruption Game",
+						grp->gpu_id, grp->group_id, id, ply, pos_root->toSFEN(), best_wp);
+					NextGame();
+					return;
+				}
+				if (pos_root->turn() == White) {
+					best_wp = 1.0 - best_wp;
+				}
 			}
+
 			{
 				// 勝率が閾値を超えた場合、ゲーム終了
 				const float winrate = abs(best_wp - 0.5f) + 0.5;
@@ -1421,6 +1459,14 @@ void UCTSearcher::NextStep()
 						else
 							gameResult = BlackWin;
 
+						NextGame();
+						return;
+					}
+					if (usi_engine_turn >= 0 && winrate_count >= WINRATE_COUNT && best_wp > 0.5) {
+						if (pos_root->turn() == Black)
+							gameResult = BlackWin;
+						else
+							gameResult = WhiteWin;
 						NextGame();
 						return;
 					}
@@ -1456,9 +1502,16 @@ void UCTSearcher::NextPly(const Move move)
 	kif += move.toUSI() + " ";
 	ply++;
 	if (ply <= 80 && ply % 5 == 0) {
+		if (ply >= 20) {
+			auto itr = st[ply].find(pos_root->getKey());
+			if (itr != st[ply].end()) {
+				SPDLOG_DEBUG(logger, "gpu_id:{} group_id:{} id:{} ply:{} {} black_temp:{:.3f} white_temp:{:3f} duplication", grp->gpu_id, grp->group_id, id, ply, pos_root->toSFEN(), random_temperature_black, random_temperature_white);
+				std::cout << kif << std::endl;
+			}
+		}
 		st[ply].insert(pos_root->getKey());
 		st_count[ply] += 1;
-		if (st_count[ply] % 100 == 0 && ply % 5 == 0)
+		if (st_count[ply] % 100 == 0 && ply % 5 == 0) 
 			std::cout << ply << " " << st[ply].size() << "/" << st_count[ply] << std::endl;
 	}
 
@@ -1489,7 +1542,7 @@ void UCTSearcher::NextPly(const Move move)
 	if (usi_engine_turn >= 0) {
 		usi_position += " " + move.toUSI();
 		if (ply % 2 == usi_engine_turn)
-			grp->usi_engines[id % usi_threads].ThinkAsync(id / usi_threads, *pos_root, usi_position, usi_byoyomi);
+			grp->usi_engines[id % usi_threads].ThinkAsync(id / usi_threads, *pos_root, usi_position, int(usi_byoyomi/1000));
 	}
 
 	// ノード再利用
@@ -1556,15 +1609,17 @@ void UCTSearcher::NextGame()
 		++usi_games;
 		if (ply % 2 == 1 && (pos_root->turn() == Black && gameResult == (BlackWin + usi_engine_turn) || pos_root->turn() == White && gameResult == (WhiteWin - usi_engine_turn)) ||
 			ply % 2 == 0 && (pos_root->turn() == Black && gameResult == (WhiteWin - usi_engine_turn) || pos_root->turn() == White && gameResult == (BlackWin + usi_engine_turn))) {
-			SPDLOG_DEBUG(logger, "gpu_id:{} group_id:{} id:{} ply:{} usi win", grp->gpu_id, grp->group_id, id, ply);
+			SPDLOG_DEBUG(logger, "gpu_id:{} group_id:{} id:{} ply:{} usi_byoyomi:{} usi win", grp->gpu_id, grp->group_id, id, ply, usi_byoyomi/1000);
 			++usi_wins;
+			usi_byoyomi += 250;
 		}
 		else if (gameResult == Draw) {
-			SPDLOG_DEBUG(logger, "gpu_id:{} group_id:{} id:{} ply:{} usi draw", grp->gpu_id, grp->group_id, id, ply);
+			SPDLOG_DEBUG(logger, "gpu_id:{} group_id:{} id:{} ply:{} usi_byoyomi:{} usi draw", grp->gpu_id, grp->group_id, id, ply, usi_byoyomi/1000);
 			++usi_draws;
 		}
 		else {
-			SPDLOG_DEBUG(logger, "gpu_id:{} group_id:{} id:{} ply:{} usi lose", grp->gpu_id, grp->group_id, id, ply);
+			SPDLOG_DEBUG(logger, "gpu_id:{} group_id:{} id:{} ply:{} usi_byoyomi:{} usi lose", grp->gpu_id, grp->group_id, id, ply, usi_byoyomi/1000);
+			usi_byoyomi -= 250;
 		}
 	}
 
@@ -1716,16 +1771,16 @@ int main(int argc, char* argv[]) {
 			("random_cutoff_drop", "random cutoff drop", cxxopts::value<float>(RANDOM_CUTOFF_DROP)->default_value("0.001"))
 			("random_temperature", "random temperature", cxxopts::value<float>(RANDOM_TEMPERATURE)->default_value("1.40"))
 			("random_temperature_final", "random temperature", cxxopts::value<float>(RANDOM_TEMPERATURE_FINAL)->default_value("0.45"))
-			("random_temperature_drop", "random temperature drop", cxxopts::value<float>(RANDOM_TEMPERATURE_DROP)->default_value("1.0"))
+			("random_temperature_drop", "random temperature drop", cxxopts::value<float>(RANDOM_TEMPERATURE_DROP)->default_value("0.070"))
 			("train_random", "train random move", cxxopts::value<bool>(TRAIN_RANDOM)->default_value("false"))
 			("random2", "random2", cxxopts::value<float>(RANDOM2)->default_value("0"))
-			("min_move", "minimum move number", cxxopts::value<int>(MIN_MOVE)->default_value("20"), "num")
+			("min_move", "minimum move number", cxxopts::value<int>(MIN_MOVE)->default_value("45"), "num")
 			("max_move", "maximum move number", cxxopts::value<int>(MAX_MOVE)->default_value("320"), "num")
 			("out_max_move", "output the max move game", cxxopts::value<bool>(OUT_MAX_MOVE)->default_value("false"))
 			("root_noise", "add noise to the policy prior at the root", cxxopts::value<int>(ROOT_NOISE)->default_value("3"), "per mille")
 			("root_alpha", "add noise to the policy prior at the root", cxxopts::value<float>(ALPHA_D)->default_value("0.75"), "per mille")
 			("winrate_count", "winrate_count", cxxopts::value<int>(WINRATE_COUNT)->default_value("5"), "num")
-			("threshold", "winrate threshold", cxxopts::value<float>(WINRATE_THRESHOLD)->default_value("0.84"), "rate")
+			("threshold", "winrate threshold", cxxopts::value<float>(WINRATE_THRESHOLD)->default_value("0.86"), "rate")
 			("mate_depth", "mate search depth", cxxopts::value<uint32_t>(ROOT_MATE_SEARCH_DEPTH)->default_value("0"), "depth")
 			("mate_nodes", "mate search max nodes", cxxopts::value<int64_t>(MATE_SEARCH_MAX_NODE)->default_value("100000"), "nodes")
 			("c_init", "UCT parameter c_init", cxxopts::value<float>(c_init)->default_value("1.49"), "val")
@@ -1733,7 +1788,7 @@ int main(int argc, char* argv[]) {
 			("c_fpu_reduction", "UCT parameter c_fpu_reduction", cxxopts::value<float>(c_fpu_reduction)->default_value("20"), "val")
 			("c_init_root", "UCT parameter c_init_root", cxxopts::value<float>(c_init_root)->default_value("1.60"), "val")
 			("c_base_root", "UCT parameter c_base_root", cxxopts::value<float>(c_base_root)->default_value("39470.0"), "val")
-			("temperature", "Softmax temperature", cxxopts::value<float>(temperature)->default_value("1.60"), "val")
+			("temperature", "Softmax temperature", cxxopts::value<float>(temperature)->default_value("1.50"), "val")
 			("reuse", "reuse sub tree", cxxopts::value<bool>(REUSE_SUBTREE)->default_value("false"))
 			("nn_cache_size", "nn cache size", cxxopts::value<unsigned int>(nn_cache_size)->default_value("8388608"))
 			("split_opponent", "split opponent's hcpe3", cxxopts::value<bool>(SPLIT_OPPONENT)->default_value("false"))
@@ -1742,7 +1797,7 @@ int main(int argc, char* argv[]) {
 			("usi_engine_num", "USIEngine number", cxxopts::value<int>(usi_engine_num)->default_value("0"), "num")
 			("usi_threads", "USIEngine thread number", cxxopts::value<int>(usi_threads)->default_value("1"), "num")
 			("usi_options", "USIEngine options", cxxopts::value<std::string>(usi_options))
-			("usi_byoyomi", "USI byoyomi", cxxopts::value<int>(usi_byoyomi)->default_value("500"))
+			("usi_byoyomi", "USI byoyomi", cxxopts::value<int>(usi_byoyomi)->default_value("100000"))
 			("usi_turn", "USIEngine turn", cxxopts::value<int>(usi_turn)->default_value("-1"))
 			("h,help", "Print help")
 			;
