@@ -1317,26 +1317,26 @@ void UCTSearcher::NextStep()
 			vector<double> probabilities;
 			probabilities.reserve(child_num);
 			float temp_c = 1.0;
-			float lower_limit = 0.430 + (pos_root->turn() == White ? -0.03 : 0.03);
-			float upper_limit = 0.570 + (pos_root->turn() == White ? -0.03 : 0.03);
+			float lower_limit = 0.425 + (pos_root->turn() == White ? -0.03 : 0.03);
+			float upper_limit = 0.575 + (pos_root->turn() == White ? -0.03 : 0.03);
 			if (best_wp_ < lower_limit) {
-				temp_c = max(0.2, 0.9 - (lower_limit - best_wp_) * 5.0);
+				temp_c = max(0.2, 0.8 - (lower_limit - best_wp_) * 5.0);
 			}
 			if (best_wp_ > upper_limit) {
-				temp_c = min(2.0, 1.1 + (best_wp_ - upper_limit) * 5.0);
+				temp_c = min(2.0, 1.25 + (best_wp_ - upper_limit) * 5.0);
 			}
 			//float r = 25;
 			//const float temperature = ((RANDOM_TEMPERATURE * 2) / (1.0 + exp(ply / r))) * temp_c;
 			const float temperature = (pos_root->turn() == Black) ? (random_temperature_black) : random_temperature_white;
 			const float reciprocal_temperature = 1.0f / temperature;
 			
-			for (int i = 0; i < std::min<int>(10, child_num); i++) {
+			for (int i = 0; i < std::min<int>(12, child_num); i++) {
 				if (sorted_uct_childs[i]->move_count == 0) break;
 				const auto win = sorted_uct_childs[i]->win / sorted_uct_childs[i]->move_count;
-				if (win < best_wp_ - 0.045) continue;
+				if (win < best_wp_ - 0.055 + min(0.015, ply * 0.001)) continue;
 				if (win < lower_limit && win < best_wp_ - 0.015) continue;
 				int move_count = sorted_uct_childs[i]->move_count + sorted_uct_childs[i]->nnrate * 4;
-				float correct_num = win >= lower_limit ? 12.5 : 25.0;
+				float correct_num = win >= lower_limit ? 10.5 : 25.5;
 				//float move_count_correction = move_count > 20 ? move_count - 10.5 : 1.25 * log(1 + exp(0.8 * (move_count - 10.5)));
 				float move_count_correction = min<float>(move_count, (move_count - correct_num) > 20 ? move_count : (4.0 * FastLog(1 + exp(0.5 * (move_count - correct_num)))) );
 				const auto probability = std::pow(move_count_correction, reciprocal_temperature);
@@ -1384,21 +1384,17 @@ void UCTSearcher::NextStep()
 
 			// 訪問数が最大のノードの価値の一定割合以下は除外
 			const auto max_move_count_child = sorted_uct_childs[0];
-			const int step = (ply - 1) / 2;
-			const float random_cutoff = std::max(0.0f, RANDOM_CUTOFF - RANDOM_CUTOFF_DROP * step);
-			const auto cutoff_threshold = max_move_count_child->win / max_move_count_child->move_count - random_cutoff;
 			vector<double> probabilities;
 			probabilities.reserve(child_num);
-			float r = 20;
 			const float temperature = RANDOM_TEMPERATURE_FINAL;
 			const float reciprocal_temperature = 1.0f / temperature;
 			for (int i = 0; i < child_num; i++) {
 				if (sorted_uct_childs[i]->move_count == 0) break;
 
 				const auto win = sorted_uct_childs[i]->win / sorted_uct_childs[i]->move_count;
-				if (win < cutoff_threshold) break;
+				//if (win < cutoff_threshold) break;
 				int move_count = sorted_uct_childs[i]->move_count + sorted_uct_childs[i]->nnrate * 4;
-				float move_count_correction = move_count > 10 ? move_count - 2.5 : 0.5 * log(1 + exp(2 * (move_count - 2.5)));
+				float move_count_correction = move_count > 10 ? move_count - 3.5 : 0.5 * log(1 + exp(2 * (move_count - 3.5)));
 				const auto probability = std::pow(move_count_correction, reciprocal_temperature);
 				probabilities.emplace_back(probability);
 				SPDLOG_TRACE(logger, "gpu_id:{} group_id:{} id:{} {}:{} move_count:{} nnrate:{} win_rate:{} probability:{}",
