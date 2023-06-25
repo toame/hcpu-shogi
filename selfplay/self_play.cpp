@@ -1333,7 +1333,7 @@ void UCTSearcher::NextStep()
 			for (int i = 0; i < std::min<int>(12, child_num); i++) {
 				if (sorted_uct_childs[i]->move_count == 0) break;
 				const auto win = sorted_uct_childs[i]->win / sorted_uct_childs[i]->move_count;
-				if (win < best_wp_ - 0.055 + min(0.015, ply * 0.001)) continue;
+				if (win < best_wp_ - 0.060 + min(0.020, ply * 0.002)) continue;
 				if (win < lower_limit && win < best_wp_ - 0.015) continue;
 				int move_count = sorted_uct_childs[i]->move_count + sorted_uct_childs[i]->nnrate * 4;
 				float correct_num = win >= lower_limit ? 10.5 : 25.5;
