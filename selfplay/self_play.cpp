@@ -1123,7 +1123,7 @@ void UCTSearcher::Playout(visitor_t& visitor)
 					}
 				}
 			}
-			else if (ply % 2 == usi_engine_turn && ((ply > RANDOM_MOVE && random_temperature_black + random_temperature_white <= 1.2) || ply > 40)) {
+			else if (ply % 2 == usi_engine_turn && ((ply > RANDOM_MOVE && random_temperature_black + random_temperature_white <= 1.2) || ply > 34)) {
 				return;
 			}
 
@@ -1206,7 +1206,7 @@ void UCTSearcher::Playout(visitor_t& visitor)
 void UCTSearcher::NextStep()
 {
 	// USIエンジン
-	if (ply % 2 == usi_engine_turn && ((ply > RANDOM_MOVE && random_temperature_black + random_temperature_white <= 1.2) || ply > 40)) {
+	if (ply % 2 == usi_engine_turn && ((ply > RANDOM_MOVE && random_temperature_black + random_temperature_white <= 1.2) || ply > 34)) {
 		const auto& result = grp->usi_engines[id % usi_threads].ThinkDone(id / usi_threads);
 		if (result.move == Move::moveNone())
 			return;
@@ -1246,7 +1246,7 @@ void UCTSearcher::NextStep()
 				gameResult = (pos_root->turn() == Black) ? BlackWin : WhiteWin;
 
 				// 局面追加（ランダム局面は除く）
-				if (((ply > RANDOM_MOVE && random_temperature_black + random_temperature_white <= 1.2) || ply > 40))
+				if (((ply > RANDOM_MOVE && random_temperature_black + random_temperature_white <= 1.2) || ply > 34))
 					AddRecord(grp->GetMateSearchMove(id), 30000, false);
 
 				NextGame();
@@ -1265,7 +1265,7 @@ void UCTSearcher::NextStep()
 	playout++;
 
 	// 探索終了判定
-	if (InterruptionCheck(playout, (((ply > RANDOM_MOVE && random_temperature_black + random_temperature_white <= 1.2) || ply > 40)) ? EXTENSION_TIMES : 0)) {
+	if (InterruptionCheck(playout, (((ply > RANDOM_MOVE && random_temperature_black + random_temperature_white <= 1.2) || ply > 34)) ? EXTENSION_TIMES : 0)) {
 		// 平均プレイアウト数を計測
 		sum_playouts += playout;
 		++sum_nodes;
@@ -1283,7 +1283,7 @@ void UCTSearcher::NextStep()
 				gameResult = (pos_root->turn() == Black) ? BlackWin : WhiteWin;
 
 				// 局面追加（初期局面は除く）
-				if (((ply > RANDOM_MOVE && random_temperature_black + random_temperature_white <= 1.2) || ply > 40))
+				if (((ply > RANDOM_MOVE && random_temperature_black + random_temperature_white <= 1.2) || ply > 34))
 					AddRecord(grp->GetMateSearchMove(id), 30000, false);
 
 				NextGame();
@@ -1299,7 +1299,7 @@ void UCTSearcher::NextStep()
 		const child_node_t* uct_child = root_node->child.get();
 		float best_wp;
 		Move best_move;
-		if (!(((ply > RANDOM_MOVE && random_temperature_black + random_temperature_white <= 1.2) || ply > 40))) {
+		if (!(((ply > RANDOM_MOVE && random_temperature_black + random_temperature_white <= 1.2) || ply > 34))) {
 			// N手までは訪問数に応じた確率で選択する
 			const auto child_num = root_node->child_num;
 
@@ -1317,13 +1317,13 @@ void UCTSearcher::NextStep()
 			vector<double> probabilities;
 			probabilities.reserve(child_num);
 			float temp_c = 1.0;
-			float lower_limit = 0.425 + (pos_root->turn() == White ? -0.03 : 0.03);
-			float upper_limit = 0.575 + (pos_root->turn() == White ? -0.03 : 0.03);
+			float lower_limit = 0.420 + (pos_root->turn() == White ? -0.03 : 0.03);
+			float upper_limit = 0.580 + (pos_root->turn() == White ? -0.03 : 0.03);
 			if (best_wp_ < lower_limit) {
-				temp_c = max(0.2, 0.8 - (lower_limit - best_wp_) * 5.0);
+				temp_c = max(0.2, 0.75 - (lower_limit - best_wp_) * 5.0);
 			}
 			if (best_wp_ > upper_limit) {
-				temp_c = min(2.0, 1.25 + (best_wp_ - upper_limit) * 5.0);
+				temp_c = min(2.0, 1.35 + (best_wp_ - upper_limit) * 5.0);
 			}
 			//float r = 25;
 			//const float temperature = ((RANDOM_TEMPERATURE * 2) / (1.0 + exp(ply / r))) * temp_c;
@@ -1338,7 +1338,7 @@ void UCTSearcher::NextStep()
 				int move_count = sorted_uct_childs[i]->move_count + sorted_uct_childs[i]->nnrate * 4;
 				float correct_num = win >= lower_limit ? 10.5 : 25.5;
 				//float move_count_correction = move_count > 20 ? move_count - 10.5 : 1.25 * log(1 + exp(0.8 * (move_count - 10.5)));
-				float move_count_correction = min<float>(move_count, (move_count - correct_num) > 20 ? move_count : (4.0 * FastLog(1 + exp(0.5 * (move_count - correct_num)))) );
+				float move_count_correction = min<float>(move_count, (move_count - correct_num) > 20 ? move_count : (4.0 * FastLog(1 + exp(0.70 * (move_count - correct_num)))) );
 				const auto probability = std::pow(move_count_correction, reciprocal_temperature);
 				//if (move_count > 10 && id == 0)
 				//	std::cout << id << " " << ply << " " << move_count << " " << move_count_correction << " " << probability << " " << temperature << std::endl;
