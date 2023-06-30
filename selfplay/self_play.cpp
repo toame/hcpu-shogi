@@ -1317,8 +1317,8 @@ void UCTSearcher::NextStep()
 			vector<double> probabilities;
 			probabilities.reserve(child_num);
 			float temp_c = 1.0;
-			float lower_limit = 0.420 + (pos_root->turn() == White ? -0.03 : 0.03);
-			float upper_limit = 0.580 + (pos_root->turn() == White ? -0.03 : 0.03);
+			float lower_limit = 0.410 + (pos_root->turn() == White ? -0.025 : 0.025);
+			float upper_limit = 0.590 + (pos_root->turn() == White ? -0.025 : 0.025);
 			if (best_wp_ < lower_limit) {
 				temp_c = max(0.2, 0.75 - (lower_limit - best_wp_) * 5.0);
 			}
@@ -1333,7 +1333,7 @@ void UCTSearcher::NextStep()
 			for (int i = 0; i < std::min<int>(12, child_num); i++) {
 				if (sorted_uct_childs[i]->move_count == 0) break;
 				const auto win = sorted_uct_childs[i]->win / sorted_uct_childs[i]->move_count;
-				if (win < best_wp_ - 0.060 + min(0.020, ply * 0.002)) continue;
+				if (win < best_wp_ - 0.060 + min(0.020, ply * 0.0015)) continue;
 				if (win < lower_limit && win < best_wp_ - 0.015) continue;
 				int move_count = sorted_uct_childs[i]->move_count + sorted_uct_childs[i]->nnrate * 4;
 				float correct_num = win >= lower_limit ? 10.5 : 25.5;
