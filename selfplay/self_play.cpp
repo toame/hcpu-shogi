@@ -1388,13 +1388,13 @@ void UCTSearcher::NextStep()
 			probabilities.reserve(child_num);
 			const float temperature = RANDOM_TEMPERATURE_FINAL;
 			const float reciprocal_temperature = 1.0f / temperature;
-			for (int i = 0; i < child_num; i++) {
+			for (int i = 0; i < std::min<int>(4, child_num); i++) {
 				if (sorted_uct_childs[i]->move_count == 0) break;
 
 				const auto win = sorted_uct_childs[i]->win / sorted_uct_childs[i]->move_count;
 				//if (win < cutoff_threshold) break;
 				int move_count = sorted_uct_childs[i]->move_count + sorted_uct_childs[i]->nnrate * 4;
-				float move_count_correction = move_count > 10 ? move_count - 3.5 : 0.5 * log(1 + exp(2 * (move_count - 3.5)));
+				float move_count_correction = min<float>(move_count, (move_count - 10.0) > 20 ? move_count : (4.0 * FastLog(1 + exp(0.70 * (move_count - 10.0)))));
 				const auto probability = std::pow(move_count_correction, reciprocal_temperature);
 				probabilities.emplace_back(probability);
 				SPDLOG_TRACE(logger, "gpu_id:{} group_id:{} id:{} {}:{} move_count:{} nnrate:{} win_rate:{} probability:{}",
