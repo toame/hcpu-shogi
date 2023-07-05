@@ -348,6 +348,7 @@ public:
 		ply(0),
 		random_temperature_black(1.4),
 		random_temperature_white(1.4),
+		previous_kldgain(0.0),
 		first_normal_move(true),
 		states(MAX_MOVE + 1) {
 		pos_root = new Position(DefaultStartPositionSFEN, s.thisptr);
@@ -400,6 +401,7 @@ private:
 	int playout;
 	int ply;
 	int winrate_count = 0;
+	float previous_kldgain = 0.0;
 	bool first_normal_move = true;
 	float random_temperature_black = 1.4;
 	float random_temperature_white = 1.4;
@@ -1017,12 +1019,13 @@ UCTSearcher::InterruptionCheck(const int playout_count, const int extension_time
 		}
 	}
 	kldgain /= 100;
-	if (kldgain < KLDGAIN_THRESHOLD) {
+	if (previous_kldgain > 0 && (previous_kldgain + kldgain) * 0.5 < KLDGAIN_THRESHOLD) {
 		return true;
 	}
 	for (int i = 0; i < child_num; i++) {
 		prev_visit[i] = uct_child[i].move_count;
 	}
+	previous_kldgain = kldgain;
 	return false;
 }
 
@@ -1370,6 +1373,13 @@ void UCTSearcher::NextStep()
 				AddRecord(best_move, value_to_score(best_wp), true);
 			else
 				AddRecord(best_move, 0, false);
+
+			if ((pos_root->turn() == Black && (best_wp < 0.27 || 0.79 < best_wp)) || (pos_root->turn() == White && (best_wp < 0.21 || 0.73 < best_wp))) {
+				SPDLOG_DEBUG(logger, "gpu_id:{} group_id:{} id:{} ply:{} {} winrate:{} Interruption Game",
+					grp->gpu_id, grp->group_id, id, ply, pos_root->toSFEN(), best_wp);
+				NextGame();
+				return;
+			}
 		}
 		else {
 			// 訪問数に応じた確率で選択する
@@ -1534,6 +1544,7 @@ void UCTSearcher::NextPly(const Move move)
 	// 次の手番
 	max_playout_num = playout_num;
 	playout = 0;
+	previous_kldgain = 0.0;
 
 	if (usi_engine_turn >= 0) {
 		usi_position += " " + move.toUSI();
@@ -1607,7 +1618,7 @@ void UCTSearcher::NextGame()
 			ply % 2 == 0 && (pos_root->turn() == Black && gameResult == (WhiteWin - usi_engine_turn) || pos_root->turn() == White && gameResult == (BlackWin + usi_engine_turn))) {
 			SPDLOG_DEBUG(logger, "gpu_id:{} group_id:{} id:{} ply:{} usi_byoyomi:{} usi win", grp->gpu_id, grp->group_id, id, ply, usi_byoyomi/1000);
 			++usi_wins;
-			usi_byoyomi += 250;
+			usi_byoyomi += 120;
 		}
 		else if (gameResult == Draw) {
 			SPDLOG_DEBUG(logger, "gpu_id:{} group_id:{} id:{} ply:{} usi_byoyomi:{} usi draw", grp->gpu_id, grp->group_id, id, ply, usi_byoyomi/1000);
@@ -1615,7 +1626,7 @@ void UCTSearcher::NextGame()
 		}
 		else {
 			SPDLOG_DEBUG(logger, "gpu_id:{} group_id:{} id:{} ply:{} usi_byoyomi:{} usi lose", grp->gpu_id, grp->group_id, id, ply, usi_byoyomi/1000);
-			usi_byoyomi -= 250;
+			usi_byoyomi -= 120;
 		}
 	}
 
