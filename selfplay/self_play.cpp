@@ -1096,11 +1096,20 @@ void UCTSearcher::Playout(visitor_t& visitor)
 				//	ifs.seekg(inputFileDist(*mt_64) * sizeof(HuffmanCodedPos), std::ios_base::beg);
 				//	ifs.read(reinterpret_cast<char*>(&hcp), sizeof(hcp));
 				//}
-				pos_root->set(DefaultStartPositionSFEN);
+				// pos_root->set(DefaultStartPositionSFEN);
+				// hcp = pos_root->toHuffmanCodedPos();
+
+				// 開始局面を局面集からランダムに選ぶ
+				{
+					std::unique_lock<Mutex> lock(imutex);
+					ifs.seekg(inputFileDist(*mt_64) * sizeof(HuffmanCodedPos), std::ios_base::beg);
+					ifs.read(reinterpret_cast<char*>(&hcp), sizeof(hcp));
+				}
+				setPosition(*pos_root, hcp);
 				kif.clear();
 				kif += "position ";
 				kif += pos_root->toSFEN() + " moves ";
-				hcp = pos_root->toHuffmanCodedPos();
+				
 				// SPDLOG_DEBUG(logger, "gpu_id:{} group_id:{} id:{} ply:{} {}", grp->gpu_id, grp->group_id, id, ply, pos_root->toSFEN());
 
 				records.clear();
@@ -1126,7 +1135,7 @@ void UCTSearcher::Playout(visitor_t& visitor)
 					}
 				}
 			}
-			else if (ply % 2 == usi_engine_turn && ((ply > RANDOM_MOVE && random_temperature_black + random_temperature_white <= 1.2) || ply > 34)) {
+			else if (ply % 2 == usi_engine_turn && (ply > RANDOM_MOVE)) {
 				return;
 			}
 
@@ -1209,7 +1218,7 @@ void UCTSearcher::Playout(visitor_t& visitor)
 void UCTSearcher::NextStep()
 {
 	// USIエンジン
-	if (ply % 2 == usi_engine_turn && ((ply > RANDOM_MOVE && random_temperature_black + random_temperature_white <= 1.2) || ply > 34)) {
+	if (ply % 2 == usi_engine_turn && (ply > RANDOM_MOVE  )) {
 		const auto& result = grp->usi_engines[id % usi_threads].ThinkDone(id / usi_threads);
 		if (result.move == Move::moveNone())
 			return;
@@ -1249,7 +1258,7 @@ void UCTSearcher::NextStep()
 				gameResult = (pos_root->turn() == Black) ? BlackWin : WhiteWin;
 
 				// 局面追加（ランダム局面は除く）
-				if (((ply > RANDOM_MOVE && random_temperature_black + random_temperature_white <= 1.2) || ply > 34))
+				if ((ply > RANDOM_MOVE  ))
 					AddRecord(grp->GetMateSearchMove(id), 30000, false);
 
 				NextGame();
@@ -1268,7 +1277,7 @@ void UCTSearcher::NextStep()
 	playout++;
 
 	// 探索終了判定
-	if (InterruptionCheck(playout, (((ply > RANDOM_MOVE && random_temperature_black + random_temperature_white <= 1.2) || ply > 34)) ? EXTENSION_TIMES : 0)) {
+	if (InterruptionCheck(playout, ((ply > RANDOM_MOVE  )) ? EXTENSION_TIMES : 0)) {
 		// 平均プレイアウト数を計測
 		sum_playouts += playout;
 		++sum_nodes;
@@ -1286,7 +1295,7 @@ void UCTSearcher::NextStep()
 				gameResult = (pos_root->turn() == Black) ? BlackWin : WhiteWin;
 
 				// 局面追加（初期局面は除く）
-				if (((ply > RANDOM_MOVE && random_temperature_black + random_temperature_white <= 1.2) || ply > 34))
+				if ((ply > RANDOM_MOVE  ))
 					AddRecord(grp->GetMateSearchMove(id), 30000, false);
 
 				NextGame();
@@ -1302,7 +1311,7 @@ void UCTSearcher::NextStep()
 		const child_node_t* uct_child = root_node->child.get();
 		float best_wp;
 		Move best_move;
-		if (!(((ply > RANDOM_MOVE && random_temperature_black + random_temperature_white <= 1.2) || ply > 34))) {
+		if (!((ply > RANDOM_MOVE  ))) {
 			// N手までは訪問数に応じた確率で選択する
 			const auto child_num = root_node->child_num;
 
