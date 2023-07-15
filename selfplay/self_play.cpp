@@ -121,6 +121,9 @@ typedef LruCache<uint64_t, CachedNNRequest> NNCache;
 typedef LruCacheLock<uint64_t, CachedNNRequest> NNCacheLock;
 unsigned int nn_cache_size = 8388608; // NNキャッシュサイズ
 
+int search_param_black_wins[3][3];
+int search_param_white_wins[3][3];
+
 s64 teacherNodes; // 教師局面数
 std::atomic<s64> idx(0);
 std::atomic<s64> madeTeacherNodes(0);
@@ -333,7 +336,7 @@ private:
 	mutex mate_search_mutex;
 	thread* handle_mate_search = nullptr;
 };
-
+float search_param_diff[3] = { -0.08, 0.0, 0.08 };
 class UCTSearcher {
 public:
 	UCTSearcher(UCTSearcherGroup* grp, NNCache& nn_cache, const int id, const size_t entryNum) :
@@ -346,6 +349,8 @@ public:
 		max_playout_num(playout_num),
 		playout(0),
 		ply(0),
+		search_param_black(0),
+		search_param_white(0),
 		random_temperature_black(1.4),
 		random_temperature_white(1.4),
 		previous_kldgain(0.0),
@@ -386,6 +391,7 @@ private:
 
 	UCTSearcherGroup* grp;
 	int id;
+	
 	unique_ptr<std::mt19937_64> mt_64;
 	unique_ptr<std::mt19937> mt;
 
@@ -401,6 +407,8 @@ private:
 	int playout;
 	int ply;
 	int winrate_count = 0;
+	int search_param_black = 0;
+	int search_param_white = 0;
 	float previous_kldgain = 0.0;
 	bool first_normal_move = true;
 	float random_temperature_black = 1.4;
@@ -907,7 +915,7 @@ UCTSearcher::SelectMaxUcbChild(child_node_t* parent, uct_node_t* current)
 	const float sqrt_sum = sqrtf((float)sum);
 	const float c = parent == nullptr ?
 		FastLog((sum + c_base_root + 1.0f) / c_base_root) + c_init_root :
-		FastLog((sum + c_base + 1.0f) / c_base) + c_init;
+		FastLog((sum + c_base + 1.0f) / c_base) + (c_init + search_param_diff[ply % 2 == 1 ? search_param_black : search_param_white]);
 	const float fpu_reduction = (parent == nullptr ? 0.0f : c_fpu_reduction) * sqrtf(current->visited_nnrate);
 	const float parent_q = sum_win > 0 ? std::max(0.0f, (float)(sum_win / sum) - fpu_reduction) : 0.0f;
 	const float init_u = sum == 0 ? 1.0f : sqrt_sum;
@@ -1090,6 +1098,11 @@ void UCTSearcher::Playout(visitor_t& visitor)
 				first_normal_move = true;
 				random_temperature_black = RANDOM_TEMPERATURE;
 				random_temperature_white = RANDOM_TEMPERATURE * 0.98f;
+				search_param_black = (*mt_64)() % 3;
+				search_param_white = (*mt_64)() % 3;
+				while (search_param_black == search_param_white) {
+					search_param_white = (*mt_64)() % 3;
+				}
 				//// 開始局面を局面集からランダムに選ぶ
 				//{
 				//	std::unique_lock<Mutex> lock(imutex);
@@ -1594,11 +1607,14 @@ void UCTSearcher::NextGame()
 {
 	if (gameResult == BlackWin) {
 		++black_wins;
+		search_param_black_wins[search_param_black][search_param_white]++;
 	}
 	if (gameResult == WhiteWin) {
 		++white_wins;
+		search_param_white_wins[search_param_black][search_param_white]++;
 	}
 	SPDLOG_DEBUG(logger, "gpu_id:{} group_id:{} id:{} ply:{} gameResult:{} black_wins:{} white_wins:{}", grp->gpu_id, grp->group_id, id, ply, gameResult, black_wins, white_wins);
+	SPDLOG_DEBUG(logger, "gpu_id:{} group_id:{} id:{} ply:{} gameResult:{} black_param:{}, white_param:{}, black_wins:{} white_wins:{}", grp->gpu_id, grp->group_id, id, ply, gameResult, search_param_black, search_param_white, search_param_black_wins[search_param_black][search_param_white], search_param_white_wins[search_param_black][search_param_white]);
 
 	// 局面出力
 	if (ply >= MIN_MOVE && records.size() > 0) {
