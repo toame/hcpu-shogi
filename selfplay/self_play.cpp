@@ -512,10 +512,10 @@ private:
 				}
 				//if (rate < 0.002 && move_count >= 50) {
 				//	std::cerr << move_count << " " << rate << " " << uct_child[i].noise << " " << rate * 0.75 + uct_child[i].noise * 0.25 << std::endl;
-				}
+				//}
 				//if (prev_move_count - move_count > 5 || (move_count > 1 && prev_move_count/move_count >= 2)) {
 				//	std::cerr << max << " " << prev_move_count << " " << move_count << " " << rate << " " << uct_child[i].noise << std::endl;
- 			//	}
+ 				//	}
 				if (move_count > 0) {
 					record.candidates.emplace_back(
 						static_cast<u16>(child[i].move.value()),
