@@ -1392,7 +1392,7 @@ void UCTSearcher::NextStep()
 			vector<double> probabilities;
 			probabilities.reserve(child_num);
 			float temp_c = 1.0;
-			float balance = 0.03;
+			float balance = -0.03;
 			float lower_limit = 0.410 + (pos_root->turn() == White ? balance : -balance);
 			float upper_limit = 0.590 + (pos_root->turn() == White ? balance : -balance);
 			if (best_wp_ < lower_limit) {
@@ -1412,7 +1412,7 @@ void UCTSearcher::NextStep()
 				if (win < best_wp_ - 0.060 + min(0.020, ply * 0.0015)) continue;
 				if (win < lower_limit && win < best_wp_ - 0.015) continue;
 				int move_count = sorted_uct_childs[i]->move_count + sorted_uct_childs[i]->nnrate * 4;
-				float correct_num = win >= lower_limit ? 10.5 : 25.5;
+				float correct_num = win >= lower_limit ? 7.5 : 15.5;
 				//float move_count_correction = move_count > 20 ? move_count - 10.5 : 1.25 * log(1 + exp(0.8 * (move_count - 10.5)));
 				float move_count_correction = min<float>(move_count, (move_count - correct_num) > 20 ? move_count : (4.0 * FastLog(1 + exp(0.70 * (move_count - correct_num)))) );
 				const auto probability = std::pow(move_count_correction, reciprocal_temperature);
@@ -1477,7 +1477,7 @@ void UCTSearcher::NextStep()
 				const auto win = sorted_uct_childs[i]->win / sorted_uct_childs[i]->move_count;
 				//if (win < cutoff_threshold) break;
 				int move_count = sorted_uct_childs[i]->move_count + sorted_uct_childs[i]->nnrate * 4;
-				float move_count_correction = min<float>(move_count, (move_count - 10.0) > 20 ? move_count : (4.0 * FastLog(1 + exp(0.70 * (move_count - 10.0)))));
+				float move_count_correction = min<float>(move_count, (move_count - 8.0) > 20 ? move_count : (4.0 * FastLog(1 + exp(0.70 * (move_count - 8.0)))));
 				const auto probability = std::pow(move_count_correction, reciprocal_temperature);
 				probabilities.emplace_back(probability);
 				SPDLOG_TRACE(logger, "gpu_id:{} group_id:{} id:{} {}:{} move_count:{} nnrate:{} win_rate:{} probability:{}",
