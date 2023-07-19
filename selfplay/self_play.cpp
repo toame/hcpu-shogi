@@ -40,10 +40,12 @@ constexpr int UCT_CHILD_MAX = 593;
 int threads = 2;
 float ALPHA_D = 0.75f;
 float KLDGAIN_THRESHOLD = 0.0000100;
-void random_dirichlet(std::mt19937_64& mt, std::vector<float>& x, const float alpha) {
-	std::gamma_distribution<float> gamma(alpha, 1.0);
+void random_dirichlet(std::mt19937_64& mt, std::vector<float>& x, const float alphaSum) {
+	
 	float sum_y = 0;
+	//std::gamma_distribution<float> gamma(0.15f, 1.0);
 	for (int i = 0; i < x.size(); i++) {
+		std::gamma_distribution<float> gamma(alphaSum * x[i], 1.0);
 		float y = gamma(mt);
 		sum_y += y;
 		x[i] = y;
@@ -134,6 +136,7 @@ std::atomic<s64> draws(0);
 std::atomic<s64> nyugyokus(0);
 // プレイアウト数
 std::atomic<s64> sum_playouts(0);
+std::atomic<s64> sum_playouts_remove(0);
 std::atomic<s64> sum_nodes(0);
 // USIエンジンとの対局結果
 std::atomic<s64> usi_games(0);
@@ -488,7 +491,7 @@ private:
 					max_ucb = ucb_value;
 				}
 			}
-
+			int sum_count = 0;
 			// UCB値最大の手を求める
 			for (int i = 0; i < child_num; i++) {
 				const WinType win = uct_child[i].win;
@@ -501,10 +504,14 @@ private:
 					const float ucb_value = q + c * u * rate;
 					if (max_value > ucb_value) {
 						move_count--;
+						sum_playouts_remove++;
 					}
 					else {
 						break;
 					}
+				}
+				//if (rate < 0.002 && move_count >= 50) {
+				//	std::cerr << move_count << " " << rate << " " << uct_child[i].noise << " " << rate * 0.75 + uct_child[i].noise * 0.25 << std::endl;
 				}
 				//if (prev_move_count - move_count > 5 || (move_count > 1 && prev_move_count/move_count >= 2)) {
 				//	std::cerr << max << " " << prev_move_count << " " << move_count << " " << rate << " " << uct_child[i].noise << std::endl;
@@ -1084,6 +1091,38 @@ void UCTSearcherGroup::EvalNode() {
 		node->SetEvaled();
 	}
 }
+void computeDirichletAlphaDistribution(int child_num, std::vector<float>& x, std::vector<float>& alphaDistr) {
+	//Half of the alpha weight are uniform.
+	//The other half are shaped based on the log of the existing policy.
+	double logPolicySum = 0.0;
+	for (int i = 0; i < child_num; i++) {
+		if (x[i] >= 0) {
+			alphaDistr[i] = log(std::min(0.01, (double)x[i]) + 1e-20);
+			logPolicySum += alphaDistr[i];
+		}
+	}
+	double logPolicyMean = logPolicySum / child_num;
+	double alphaPropSum = 0.0;
+	for (int i = 0; i < child_num; i++) {
+		if (x[i] >= 0) {
+			alphaDistr[i] = std::max(0.0, alphaDistr[i] - logPolicyMean);
+			alphaPropSum += alphaDistr[i];
+		}
+	}
+	double uniformProb = 1.0 / child_num;
+	if (alphaPropSum <= 0.0) {
+		for (int i = 0; i < child_num; i++) {
+			if (x[i] >= 0)
+				alphaDistr[i] = uniformProb;
+		}
+	}
+	else {
+		for (int i = 0; i < child_num; i++) {
+			if (x[i] >= 0)
+				alphaDistr[i] = 0.5 * (alphaDistr[i] / alphaPropSum + uniformProb);
+		}
+	}
+}
 
 // シミュレーションを1回行う
 void UCTSearcher::Playout(visitor_t& visitor)
@@ -1160,15 +1199,6 @@ void UCTSearcher::Playout(visitor_t& visitor)
 				root_node->ExpandNode(pos_root);
 			}
 
-			// ノイズ回数初期化
-			prev_visit.resize(root_node->child_num);
-			v_noise.resize(root_node->child_num);
-			std::fill(prev_visit.begin(), prev_visit.end(), 0);
-			random_dirichlet(*mt_64, v_noise, 0.15f);
-			for (int i = 0; i < root_node->child_num; i++) {
-				root_node->child[i].noise = v_noise[i];
-			}
-
 			// 詰みのチェック
 			if (root_node->child_num == 0) {
 				gameResult = (pos_root->turn() == Black) ? GameResult::WhiteWin : GameResult::BlackWin;
@@ -1211,6 +1241,26 @@ void UCTSearcher::Playout(visitor_t& visitor)
 					// キャッシュからnnrateをコピー
 					CopyNNRate(root_node.get(), cache_lock->nnrate);
 				}
+			}
+		}
+		else if (playout == 1) {
+			// ノイズ回数初期化
+			std::vector<float> root_x(root_node->child_num);
+			std::vector<float> r(root_node->child_num);
+			for (int i = 0; i < root_node->child_num; i++) {
+				root_x[i] = root_node->child[i].nnrate;
+			}
+			prev_visit.resize(root_node->child_num);
+			v_noise.resize(root_node->child_num);
+			std::fill(prev_visit.begin(), prev_visit.end(), 0);
+			computeDirichletAlphaDistribution(root_node->child_num, root_x, r);
+			random_dirichlet(*mt_64, r, 10.0f);
+			float sum = 0.0;
+			for (int i = 0; i < root_node->child_num; i++) {
+				root_node->child[i].noise = r[i];
+				sum += r[i];
+				//if (root_node->child_num >= 60 && r[i] > 0.01)
+				//	std::cerr << i << " " << r[i] << " " << root_x[i] << std::endl;
 			}
 		}
 
@@ -1342,8 +1392,9 @@ void UCTSearcher::NextStep()
 			vector<double> probabilities;
 			probabilities.reserve(child_num);
 			float temp_c = 1.0;
-			float lower_limit = 0.410 + (pos_root->turn() == White ? -0.025 : 0.025);
-			float upper_limit = 0.590 + (pos_root->turn() == White ? -0.025 : 0.025);
+			float balance = 0.03;
+			float lower_limit = 0.410 + (pos_root->turn() == White ? balance : -balance);
+			float upper_limit = 0.590 + (pos_root->turn() == White ? balance : -balance);
 			if (best_wp_ < lower_limit) {
 				temp_c = max(0.2, 0.75 - (lower_limit - best_wp_) * 5.0);
 			}
@@ -1459,7 +1510,7 @@ void UCTSearcher::NextStep()
 					SPDLOG_DEBUG(logger, "gpu_id:{} group_id:{} id:{} ply:{} {} winrate:{}: {} {} {} {} {} {} {}",
 						grp->gpu_id, grp->group_id, id, ply, pos_root->toSFEN(), best_wp, a[0], a[1], a[2], a[3], a[4], a[5], a[6]);
 				// randomプレイ終了後の評価値が微妙の場合はすぐ終了する。
-				if ((pos_root->turn() == Black && (best_wp < 0.29 || 0.76 < best_wp)) || (pos_root->turn() == White && (best_wp < 0.24 || 0.71 < best_wp))) {
+				if ((pos_root->turn() == Black && (best_wp < 0.24 || 0.71 < best_wp)) || (pos_root->turn() == White && (best_wp < 0.29 || 0.76 < best_wp))) {
 					SPDLOG_DEBUG(logger, "gpu_id:{} group_id:{} id:{} ply:{} {} winrate:{} Interruption Game",
 						grp->gpu_id, grp->group_id, id, ply, pos_root->toSFEN(), best_wp);
 					NextGame();
@@ -1473,14 +1524,8 @@ void UCTSearcher::NextStep()
 			{
 				// 勝率が閾値を超えた場合、ゲーム終了
 				const float winrate = abs(best_wp - 0.5f) + 0.5;
-				if (WINRATE_THRESHOLD <= winrate) {
+				if (ply <= 150 && WINRATE_THRESHOLD <= winrate || 0.998 <= winrate) {
 					winrate_count += 1;
-					if (winrate >= abs(0.94)) {
-						winrate_count += 1;
-					}
-					if (winrate >= abs(0.98)) {
-						winrate_count += 1;
-					}
 					if (winrate_count >= WINRATE_COUNT && best_wp < 0.5) {
 						if (pos_root->turn() == Black)
 							gameResult = WhiteWin;
@@ -1718,7 +1763,7 @@ void make_teacher(const char* recordFileName, const char* outputFileName, const 
 			const double progress = static_cast<double>(madeTeacherNodes) / teacherNodes;
 			auto elapsed_msec = t.elapsed();
 			if (progress > 0.0) // 0 除算を回避する。
-				logger->info("Progress:{:.2f}%, nodes:{}, nodes/sec:{:.2f}, games:{}, draw:{}, nyugyoku:{}, ply/game:{:.2f}, playouts/node:{:.2f} gpu id:{}, usi_games:{}, usi_win:{}, usi_draw:{}, Elapsed:{}[s], Remaining:{}[s]",
+				logger->info("Progress:{:.2f}%, nodes:{}, nodes/sec:{:.2f}, games:{}, draw:{}, nyugyoku:{}, ply/game:{:.2f}, playouts/node:{:.2f},  playouts_remove/node:{:.2f} gpu id:{}, usi_games:{}, usi_win:{}, usi_draw:{}, Elapsed:{}[s], Remaining:{}[s]",
 					std::min(100.0, progress * 100.0),
 					idx,
 					static_cast<double>(idx) / elapsed_msec * 1000.0,
@@ -1727,6 +1772,7 @@ void make_teacher(const char* recordFileName, const char* outputFileName, const 
 					nyugyokus,
 					static_cast<double>(madeTeacherNodes) / games,
 					static_cast<double>(sum_playouts) / sum_nodes,
+					static_cast<double>(sum_playouts_remove) / sum_nodes,
 					ss.str(),
 					usi_games,
 					usi_wins,
