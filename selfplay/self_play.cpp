@@ -41,7 +41,7 @@ int threads = 2;
 float ALPHA_D = 0.75f;
 float KLDGAIN_THRESHOLD = 0.0000100;
 void random_dirichlet(std::mt19937_64& mt, std::vector<float>& x, const float alphaSum) {
-	
+
 	float sum_y = 0;
 	//std::gamma_distribution<float> gamma(0.15f, 1.0);
 	for (int i = 0; i < x.size(); i++) {
@@ -170,7 +170,7 @@ float c_fpu_reduction;
 float c_init_root;
 float c_base_root;
 float temperature;
-
+float root_temperature;
 
 typedef pair<uct_node_t*, unsigned int> trajectory_t;
 typedef vector<trajectory_t> trajectories_t;
@@ -394,7 +394,7 @@ private:
 
 	UCTSearcherGroup* grp;
 	int id;
-	
+
 	unique_ptr<std::mt19937_64> mt_64;
 	unique_ptr<std::mt19937> mt;
 
@@ -515,7 +515,7 @@ private:
 				//}
 				//if (prev_move_count - move_count > 5 || (move_count > 1 && prev_move_count/move_count >= 2)) {
 				//	std::cerr << max << " " << prev_move_count << " " << move_count << " " << rate << " " << uct_child[i].noise << std::endl;
- 				//	}
+				//	}
 				if (move_count > 0) {
 					record.candidates.emplace_back(
 						static_cast<u16>(child[i].move.value()),
@@ -1073,8 +1073,10 @@ void UCTSearcherGroup::EvalNode() {
 		}
 
 		// Boltzmann distribution
-		softmax_temperature_with_normalize(uct_child, child_num);
-
+		if (policy_value_batch[i].value_win)
+			softmax_temperature_with_normalize(uct_child, child_num);
+		else
+			softmax_temperature_with_normalize_root(uct_child, child_num);
 		auto req = make_unique<CachedNNRequest>(child_num);
 		for (int j = 0; j < child_num; j++) {
 			req->nnrate[j] = uct_child[j].nnrate;
@@ -1091,7 +1093,7 @@ void UCTSearcherGroup::EvalNode() {
 		node->SetEvaled();
 	}
 }
-void computeDirichletAlphaDistribution(int child_num, std::vector<float>& x, std::vector<float>& alphaDistr) {
+void computeDirichletAlphaDistribution(int child_num, std::vector<double>& x, std::vector<float>& alphaDistr) {
 	//Half of the alpha weight are uniform.
 	//The other half are shaped based on the log of the existing policy.
 	double logPolicySum = 0.0;
@@ -1119,7 +1121,7 @@ void computeDirichletAlphaDistribution(int child_num, std::vector<float>& x, std
 	else {
 		for (int i = 0; i < child_num; i++) {
 			if (x[i] >= 0)
-				alphaDistr[i] = 0.5 * (alphaDistr[i] / alphaPropSum + uniformProb);
+				alphaDistr[i] = 0.75 * (alphaDistr[i] / alphaPropSum) + 0.25 * uniformProb;
 		}
 	}
 }
@@ -1161,7 +1163,7 @@ void UCTSearcher::Playout(visitor_t& visitor)
 				kif.clear();
 				kif += "position ";
 				kif += pos_root->toSFEN() + " moves ";
-				
+
 				// SPDLOG_DEBUG(logger, "gpu_id:{} group_id:{} id:{} ply:{} {}", grp->gpu_id, grp->group_id, id, ply, pos_root->toSFEN());
 
 				records.clear();
@@ -1182,7 +1184,7 @@ void UCTSearcher::Playout(visitor_t& visitor)
 						usi_engine_turn = rnd(*mt) % 2;
 
 					if (usi_engine_turn == 1 && RANDOM_MOVE == 0) {
-						grp->usi_engines[id % usi_threads].ThinkAsync(id / usi_threads, *pos_root, usi_position, int(usi_byoyomi/1000));
+						grp->usi_engines[id % usi_threads].ThinkAsync(id / usi_threads, *pos_root, usi_position, int(usi_byoyomi / 1000));
 						return;
 					}
 				}
@@ -1229,23 +1231,28 @@ void UCTSearcher::Playout(visitor_t& visitor)
 				grp->QueuingMateSearch(pos_root, id);
 			}
 
-			// ルート局面をキューに追加
+			//// ルート局面をキューに追加
+			//if (!root_node->IsEvaled()) {
+			//	NNCacheLock cache_lock(&nn_cache, pos_root->getKey());
+			//	if (!cache_lock || cache_lock->nnrate.size() == 0 || true) {
+			//		grp->QueuingNode(pos_root, root_node.get(), nullptr);
+			//		return;
+			//	}
+			//	else {
+			//		assert(cache_lock->nnrate.size() == root_node->child_num);
+			//		// キャッシュからnnrateをコピー
+			//		CopyNNRate(root_node.get(), cache_lock->nnrate);
+			//	}
+			//}
 			if (!root_node->IsEvaled()) {
 				NNCacheLock cache_lock(&nn_cache, pos_root->getKey());
-				if (!cache_lock || cache_lock->nnrate.size() == 0) {
-					grp->QueuingNode(pos_root, root_node.get(), nullptr);
-					return;
-				}
-				else {
-					assert(cache_lock->nnrate.size() == root_node->child_num);
-					// キャッシュからnnrateをコピー
-					CopyNNRate(root_node.get(), cache_lock->nnrate);
-				}
+				grp->QueuingNode(pos_root, root_node.get(), nullptr);
+				return;
 			}
 		}
 		else if (playout == 1) {
 			// ノイズ回数初期化
-			std::vector<float> root_x(root_node->child_num);
+			std::vector<double> root_x(root_node->child_num);
 			std::vector<float> r(root_node->child_num);
 			for (int i = 0; i < root_node->child_num; i++) {
 				root_x[i] = root_node->child[i].nnrate;
@@ -1255,12 +1262,8 @@ void UCTSearcher::Playout(visitor_t& visitor)
 			std::fill(prev_visit.begin(), prev_visit.end(), 0);
 			computeDirichletAlphaDistribution(root_node->child_num, root_x, r);
 			random_dirichlet(*mt_64, r, 10.0f);
-			float sum = 0.0;
 			for (int i = 0; i < root_node->child_num; i++) {
 				root_node->child[i].noise = r[i];
-				sum += r[i];
-				//if (root_node->child_num >= 60 && r[i] > 0.01)
-				//	std::cerr << i << " " << r[i] << " " << root_x[i] << std::endl;
 			}
 		}
 
@@ -1281,7 +1284,7 @@ void UCTSearcher::Playout(visitor_t& visitor)
 void UCTSearcher::NextStep()
 {
 	// USIエンジン
-	if (ply % 2 == usi_engine_turn && (ply > RANDOM_MOVE  )) {
+	if (ply % 2 == usi_engine_turn && (ply > RANDOM_MOVE)) {
 		const auto& result = grp->usi_engines[id % usi_threads].ThinkDone(id / usi_threads);
 		if (result.move == Move::moveNone())
 			return;
@@ -1321,7 +1324,7 @@ void UCTSearcher::NextStep()
 				gameResult = (pos_root->turn() == Black) ? BlackWin : WhiteWin;
 
 				// 局面追加（ランダム局面は除く）
-				if ((ply > RANDOM_MOVE  ))
+				if ((ply > RANDOM_MOVE))
 					AddRecord(grp->GetMateSearchMove(id), 30000, false);
 
 				NextGame();
@@ -1340,7 +1343,7 @@ void UCTSearcher::NextStep()
 	playout++;
 
 	// 探索終了判定
-	if (InterruptionCheck(playout, ((ply > RANDOM_MOVE  )) ? EXTENSION_TIMES : 0)) {
+	if (InterruptionCheck(playout, ((ply > RANDOM_MOVE)) ? EXTENSION_TIMES : 0)) {
 		// 平均プレイアウト数を計測
 		sum_playouts += playout;
 		++sum_nodes;
@@ -1358,7 +1361,7 @@ void UCTSearcher::NextStep()
 				gameResult = (pos_root->turn() == Black) ? BlackWin : WhiteWin;
 
 				// 局面追加（初期局面は除く）
-				if ((ply > RANDOM_MOVE  ))
+				if ((ply > RANDOM_MOVE))
 					AddRecord(grp->GetMateSearchMove(id), 30000, false);
 
 				NextGame();
@@ -1374,7 +1377,7 @@ void UCTSearcher::NextStep()
 		const child_node_t* uct_child = root_node->child.get();
 		float best_wp;
 		Move best_move;
-		if (!((ply > RANDOM_MOVE  ))) {
+		if (!((ply > RANDOM_MOVE))) {
 			// N手までは訪問数に応じた確率で選択する
 			const auto child_num = root_node->child_num;
 
@@ -1405,7 +1408,7 @@ void UCTSearcher::NextStep()
 			//const float temperature = ((RANDOM_TEMPERATURE * 2) / (1.0 + exp(ply / r))) * temp_c;
 			const float temperature = (pos_root->turn() == Black) ? (random_temperature_black) : random_temperature_white;
 			const float reciprocal_temperature = 1.0f / temperature;
-			
+
 			for (int i = 0; i < std::min<int>(12, child_num); i++) {
 				if (sorted_uct_childs[i]->move_count == 0) break;
 				const auto win = sorted_uct_childs[i]->win / sorted_uct_childs[i]->move_count;
@@ -1414,7 +1417,7 @@ void UCTSearcher::NextStep()
 				int move_count = sorted_uct_childs[i]->move_count + sorted_uct_childs[i]->nnrate * 4;
 				float correct_num = win >= lower_limit ? 7.5 : 15.5;
 				//float move_count_correction = move_count > 20 ? move_count - 10.5 : 1.25 * log(1 + exp(0.8 * (move_count - 10.5)));
-				float move_count_correction = min<float>(move_count, (move_count - correct_num) > 20 ? move_count : (4.0 * FastLog(1 + exp(0.70 * (move_count - correct_num)))) );
+				float move_count_correction = min<float>(move_count, (move_count - correct_num) > 20 ? move_count : (4.0 * FastLog(1 + exp(0.70 * (move_count - correct_num)))));
 				const auto probability = std::pow(move_count_correction, reciprocal_temperature);
 				//if (move_count > 10 && id == 0)
 				//	std::cout << id << " " << ply << " " << move_count << " " << move_count_correction << " " << probability << " " << temperature << std::endl;
@@ -1584,7 +1587,7 @@ void UCTSearcher::NextPly(const Move move)
 		}
 		st[ply].insert(pos_root->getKey());
 		st_count[ply] += 1;
-		if (st_count[ply] % 100 == 0 && ply % 5 == 0) 
+		if (st_count[ply] % 100 == 0 && ply % 5 == 0)
 			std::cout << ply << " " << st[ply].size() << "/" << st_count[ply] << std::endl;
 	}
 
@@ -1616,7 +1619,7 @@ void UCTSearcher::NextPly(const Move move)
 	if (usi_engine_turn >= 0) {
 		usi_position += " " + move.toUSI();
 		if (ply % 2 == usi_engine_turn)
-			grp->usi_engines[id % usi_threads].ThinkAsync(id / usi_threads, *pos_root, usi_position, int(usi_byoyomi/1000));
+			grp->usi_engines[id % usi_threads].ThinkAsync(id / usi_threads, *pos_root, usi_position, int(usi_byoyomi / 1000));
 	}
 
 	// ノード再利用
@@ -1686,16 +1689,16 @@ void UCTSearcher::NextGame()
 		++usi_games;
 		if (ply % 2 == 1 && (pos_root->turn() == Black && gameResult == (BlackWin + usi_engine_turn) || pos_root->turn() == White && gameResult == (WhiteWin - usi_engine_turn)) ||
 			ply % 2 == 0 && (pos_root->turn() == Black && gameResult == (WhiteWin - usi_engine_turn) || pos_root->turn() == White && gameResult == (BlackWin + usi_engine_turn))) {
-			SPDLOG_DEBUG(logger, "gpu_id:{} group_id:{} id:{} ply:{} usi_byoyomi:{} usi win", grp->gpu_id, grp->group_id, id, ply, usi_byoyomi/1000);
+			SPDLOG_DEBUG(logger, "gpu_id:{} group_id:{} id:{} ply:{} usi_byoyomi:{} usi win", grp->gpu_id, grp->group_id, id, ply, usi_byoyomi / 1000);
 			++usi_wins;
 			usi_byoyomi += 120;
 		}
 		else if (gameResult == Draw) {
-			SPDLOG_DEBUG(logger, "gpu_id:{} group_id:{} id:{} ply:{} usi_byoyomi:{} usi draw", grp->gpu_id, grp->group_id, id, ply, usi_byoyomi/1000);
+			SPDLOG_DEBUG(logger, "gpu_id:{} group_id:{} id:{} ply:{} usi_byoyomi:{} usi draw", grp->gpu_id, grp->group_id, id, ply, usi_byoyomi / 1000);
 			++usi_draws;
 		}
 		else {
-			SPDLOG_DEBUG(logger, "gpu_id:{} group_id:{} id:{} ply:{} usi_byoyomi:{} usi lose", grp->gpu_id, grp->group_id, id, ply, usi_byoyomi/1000);
+			SPDLOG_DEBUG(logger, "gpu_id:{} group_id:{} id:{} ply:{} usi_byoyomi:{} usi lose", grp->gpu_id, grp->group_id, id, ply, usi_byoyomi / 1000);
 			usi_byoyomi -= 120;
 		}
 	}
@@ -1866,7 +1869,8 @@ int main(int argc, char* argv[]) {
 			("c_fpu_reduction", "UCT parameter c_fpu_reduction", cxxopts::value<float>(c_fpu_reduction)->default_value("20"), "val")
 			("c_init_root", "UCT parameter c_init_root", cxxopts::value<float>(c_init_root)->default_value("1.60"), "val")
 			("c_base_root", "UCT parameter c_base_root", cxxopts::value<float>(c_base_root)->default_value("39470.0"), "val")
-			("temperature", "Softmax temperature", cxxopts::value<float>(temperature)->default_value("1.50"), "val")
+			("temperature", "Softmax temperature", cxxopts::value<float>(temperature)->default_value("1.40"), "val")
+			("root_temperature", "Softmax temperature", cxxopts::value<float>(root_temperature)->default_value("1.55"), "val")
 			("reuse", "reuse sub tree", cxxopts::value<bool>(REUSE_SUBTREE)->default_value("false"))
 			("nn_cache_size", "nn cache size", cxxopts::value<unsigned int>(nn_cache_size)->default_value("8388608"))
 			("split_opponent", "split opponent's hcpe3", cxxopts::value<bool>(SPLIT_OPPONENT)->default_value("false"))
@@ -1994,6 +1998,7 @@ int main(int argc, char* argv[]) {
 	logger->info("c_init_root:{}", c_init_root);
 	logger->info("c_base_root:{}", c_base_root);
 	logger->info("temperature:{}", temperature);
+	logger->info("root_temperature:{}", root_temperature);
 	logger->info("reuse:{}", REUSE_SUBTREE);
 	logger->info("nn_cache_size:{}", nn_cache_size);
 	if (SPLIT_OPPONENT) logger->info("split_opponent");
@@ -2010,6 +2015,7 @@ int main(int argc, char* argv[]) {
 	HuffmanCodedPos::init();
 
 	set_softmax_temperature(temperature);
+	set_root_softmax_temperature(root_temperature);
 
 	signal(SIGINT, sigint_handler);
 

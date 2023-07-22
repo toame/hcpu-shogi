@@ -127,3 +127,5 @@ private:
 // Boltzmann distribution
 void set_softmax_temperature(const float temperature);
 void softmax_temperature_with_normalize(child_node_t* child_node, const int child_num);
+void set_root_softmax_temperature(const float temperature);
+void softmax_temperature_with_normalize_root(child_node_t* child_node, const int child_num);
