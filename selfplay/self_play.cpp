@@ -340,6 +340,7 @@ private:
 	thread* handle_mate_search = nullptr;
 };
 float search_param_diff[3] = { -0.08, 0.0, 0.08 };
+mt19937_64 mt_64_global;
 class UCTSearcher {
 public:
 	UCTSearcher(UCTSearcherGroup* grp, NNCache& nn_cache, const int id, const size_t entryNum) :
@@ -1043,56 +1044,6 @@ UCTSearcher::InterruptionCheck(const int playout_count, const int extension_time
 	previous_kldgain = kldgain;
 	return false;
 }
-
-// 局面の評価
-void UCTSearcherGroup::EvalNode() {
-	if (current_policy_value_batch_index == 0)
-		return;
-
-	const int policy_value_batch_size = current_policy_value_batch_index;
-
-	// predict
-	parent->nn_forward(policy_value_batch_size, features1, features2, y1, y2);
-
-	DType(*logits)[MAX_MOVE_LABEL_NUM * SquareNum] = reinterpret_cast<DType(*)[MAX_MOVE_LABEL_NUM * SquareNum]>(y1);
-	DType* value = y2;
-
-	for (int i = 0; i < policy_value_batch_size; i++, logits++, value++) {
-		uct_node_t* node = policy_value_batch[i].node;
-		const Color color = policy_value_batch[i].color;
-
-		const int child_num = node->child_num;
-		child_node_t* uct_child = node->child.get();
-
-		// 合法手一覧
-		for (int j = 0; j < child_num; j++) {
-			Move move = uct_child[j].move;
-			const int move_label = make_move_label((u16)move.proFromAndTo(), color);
-			const float logit = (float)(*logits)[move_label];
-			uct_child[j].nnrate = logit;
-		}
-
-		// Boltzmann distribution
-		if (policy_value_batch[i].value_win)
-			softmax_temperature_with_normalize(uct_child, child_num);
-		else
-			softmax_temperature_with_normalize_root(uct_child, child_num);
-		auto req = make_unique<CachedNNRequest>(child_num);
-		for (int j = 0; j < child_num; j++) {
-			req->nnrate[j] = uct_child[j].nnrate;
-		}
-
-		const float value_win = (float)*value;
-
-		req->value_win = value_win;
-		nn_cache.Insert(policy_value_batch[i].key, std::move(req));
-
-		if (policy_value_batch[i].value_win)
-			*policy_value_batch[i].value_win = value_win;
-
-		node->SetEvaled();
-	}
-}
 void computeDirichletAlphaDistribution(int child_num, std::vector<double>& x, std::vector<float>& alphaDistr) {
 	//Half of the alpha weight are uniform.
 	//The other half are shaped based on the log of the existing policy.
@@ -1121,8 +1072,68 @@ void computeDirichletAlphaDistribution(int child_num, std::vector<double>& x, st
 	else {
 		for (int i = 0; i < child_num; i++) {
 			if (x[i] >= 0)
-				alphaDistr[i] = 0.75 * (alphaDistr[i] / alphaPropSum) + 0.25 * uniformProb;
+				alphaDistr[i] = 0.5 * (alphaDistr[i] / alphaPropSum + uniformProb);
 		}
+	}
+}
+
+// 局面の評価
+void UCTSearcherGroup::EvalNode() {
+	if (current_policy_value_batch_index == 0)
+		return;
+
+	const int policy_value_batch_size = current_policy_value_batch_index;
+
+	// predict
+	parent->nn_forward(policy_value_batch_size, features1, features2, y1, y2);
+
+	DType(*logits)[MAX_MOVE_LABEL_NUM * SquareNum] = reinterpret_cast<DType(*)[MAX_MOVE_LABEL_NUM * SquareNum]>(y1);
+	DType* value = y2;
+
+	for (int i = 0; i < policy_value_batch_size; i++, logits++, value++) {
+		uct_node_t* node = policy_value_batch[i].node;
+		const Color color = policy_value_batch[i].color;
+
+		const int child_num = node->child_num;
+		child_node_t* uct_child = node->child.get();
+		std::vector<double> root_x(child_num);
+		// 合法手一覧
+		for (int j = 0; j < child_num; j++) {
+			Move move = uct_child[j].move;
+			const int move_label = make_move_label((u16)move.proFromAndTo(), color);
+			const float logit = (float)(*logits)[move_label];
+			uct_child[j].nnrate = logit;
+			root_x[j] = logit;
+		}
+
+		// Boltzmann distribution
+		if (policy_value_batch[i].value_win)
+			softmax_temperature_with_normalize(uct_child, child_num);
+		else {
+			std::vector<float> r(child_num);
+			softmax_temperature_with_normalize_dirichlet(root_x, child_num);
+			
+			computeDirichletAlphaDistribution(child_num, root_x, r);
+			random_dirichlet(mt_64_global, r, 10.0f);
+			for (int j = 0; j < child_num; j++) {
+				uct_child[j].noise = r[j];
+			}
+			softmax_temperature_with_normalize_root(uct_child, child_num);
+		}
+		auto req = make_unique<CachedNNRequest>(child_num);
+		for (int j = 0; j < child_num; j++) {
+			req->nnrate[j] = uct_child[j].nnrate;
+		}
+
+		const float value_win = (float)*value;
+
+		req->value_win = value_win;
+		nn_cache.Insert(policy_value_batch[i].key, std::move(req));
+
+		if (policy_value_batch[i].value_win)
+			*policy_value_batch[i].value_win = value_win;
+
+		node->SetEvaled();
 	}
 }
 
@@ -1200,7 +1211,9 @@ void UCTSearcher::Playout(visitor_t& visitor)
 				// ルートノード展開
 				root_node->ExpandNode(pos_root);
 			}
-
+			prev_visit.resize(root_node->child_num);
+			v_noise.resize(root_node->child_num);
+			std::fill(prev_visit.begin(), prev_visit.end(), 0);
 			// 詰みのチェック
 			if (root_node->child_num == 0) {
 				gameResult = (pos_root->turn() == Black) ? GameResult::WhiteWin : GameResult::BlackWin;
@@ -1230,7 +1243,7 @@ void UCTSearcher::Playout(visitor_t& visitor)
 				mate_status = MateSearchEntry::RUNING;
 				grp->QueuingMateSearch(pos_root, id);
 			}
-
+			
 			//// ルート局面をキューに追加
 			//if (!root_node->IsEvaled()) {
 			//	NNCacheLock cache_lock(&nn_cache, pos_root->getKey());
@@ -1250,23 +1263,6 @@ void UCTSearcher::Playout(visitor_t& visitor)
 				return;
 			}
 		}
-		else if (playout == 1) {
-			// ノイズ回数初期化
-			std::vector<double> root_x(root_node->child_num);
-			std::vector<float> r(root_node->child_num);
-			for (int i = 0; i < root_node->child_num; i++) {
-				root_x[i] = root_node->child[i].nnrate;
-			}
-			prev_visit.resize(root_node->child_num);
-			v_noise.resize(root_node->child_num);
-			std::fill(prev_visit.begin(), prev_visit.end(), 0);
-			computeDirichletAlphaDistribution(root_node->child_num, root_x, r);
-			random_dirichlet(*mt_64, r, 10.0f);
-			for (int i = 0; i < root_node->child_num; i++) {
-				root_node->child[i].noise = r[i];
-			}
-		}
-
 		// 盤面のコピー
 		Position pos_copy(*pos_root);
 		// プレイアウト

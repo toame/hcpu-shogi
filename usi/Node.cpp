@@ -226,3 +226,25 @@ void softmax_temperature_with_normalize_root(child_node_t* child_node, const int
         x /= sum;
     }
 }
+void softmax_temperature_with_normalize_dirichlet(std::vector<double>& nnrate, const int child_num) {
+    // apply beta exponent to probabilities(in log space)
+    double max = 0.0f;
+    for (int i = 0; i < child_num; i++) {
+        double& x = nnrate[i];
+        if (x > max) {
+            max = x;
+        }
+    }
+    // オーバーフローを防止するため最大値で引く
+    double sum = 0.0f;
+    for (int i = 0; i < child_num; i++) {
+        double& x = nnrate[i];
+        x = exp(x - max);
+        sum += x;
+    }
+    // normalize
+    for (int i = 0; i < child_num; i++) {
+        double& x = nnrate[i];
+        x /= sum;
+    }
+}
