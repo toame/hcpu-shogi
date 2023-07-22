@@ -88,7 +88,7 @@ float WINRATE_THRESHOLD;
 uint32_t ROOT_MATE_SEARCH_DEPTH;
 // 詰み探索の最大ノード数
 int64_t MATE_SEARCH_MAX_NODE;
-constexpr int64_t MATE_SEARCH_MIN_NODE = 10000;
+constexpr int64_t MATE_SEARCH_MIN_NODE = 2000;
 
 // モデルのパス
 string model_path;
