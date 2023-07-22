@@ -453,13 +453,12 @@ private:
 
 	// 局面追加
 	// 訓練に使用しない手はtrainningをfalseにする
-	void AddRecord(Move move, s16 eval, bool trainning) {
+	void AddRecord(Move move, s16 eval, bool trainning, bool is_mate = false) {
 		Record& record = records.emplace_back(
 			static_cast<u16>(move.value()),
 			eval
 		);
 		if (trainning) {
-
 			const auto child = root_node->child.get();
 			record.candidates.reserve(root_node->child_num);
 			const size_t child_num = root_node->child_num;
@@ -473,6 +472,7 @@ private:
 			// 探索回数が最も多い手と次に多い手を求める
 			int max_index = 0;
 			int max = 0;
+			int max2 = 0;
 			float max_value = 0;
 			float max_ucb = 0;
 			for (int i = 0; i < child_num; i++) {
@@ -484,7 +484,6 @@ private:
 
 				float rate = uct_child[i].nnrate;
 				const float ucb_value = q + c * u * rate;
-
 				if ((max <= 100 && child[i].move_count > max) || (child[i].move_count > 100 && max_ucb < ucb_value)) {
 					max = child[i].move_count;
 					max_index = i;
@@ -518,6 +517,11 @@ private:
 				//	std::cerr << max << " " << prev_move_count << " " << move_count << " " << rate << " " << uct_child[i].noise << std::endl;
 				//	}
 				if (move_count > 0) {
+					if (is_mate && child[i].move == move) {
+						if (move_count * 1.5 < sum) {
+							move_count += sum;
+						}
+					}
 					record.candidates.emplace_back(
 						static_cast<u16>(child[i].move.value()),
 						static_cast<u16>(move_count)
@@ -1308,32 +1312,32 @@ void UCTSearcher::NextStep()
 		return;
 	}
 
-	// 詰み探索の結果を調べる
-	if (ROOT_MATE_SEARCH_DEPTH > 0 && mate_status == MateSearchEntry::RUNING) {
-		mate_status = grp->GetMateSearchStatus(id);
-		if (mate_status != MateSearchEntry::RUNING) {
-			// 詰みの場合
-			switch (mate_status) {
-			case MateSearchEntry::WIN:
-			{
-				SPDLOG_DEBUG(logger, "gpu_id:{} group_id:{} id:{} ply:{} {} mate win", grp->gpu_id, grp->group_id, id, ply, pos_root->toSFEN());
-				gameResult = (pos_root->turn() == Black) ? BlackWin : WhiteWin;
+	//// 詰み探索の結果を調べる
+	//if (ROOT_MATE_SEARCH_DEPTH > 0 && mate_status == MateSearchEntry::RUNING) {
+	//	mate_status = grp->GetMateSearchStatus(id);
+	//	if (mate_status != MateSearchEntry::RUNING) {
+	//		// 詰みの場合
+	//		switch (mate_status) {
+	//		case MateSearchEntry::WIN:
+	//		{
+	//			SPDLOG_DEBUG(logger, "gpu_id:{} group_id:{} id:{} ply:{} {} mate win", grp->gpu_id, grp->group_id, id, ply, pos_root->toSFEN());
+	//			gameResult = (pos_root->turn() == Black) ? BlackWin : WhiteWin;
 
-				// 局面追加（ランダム局面は除く）
-				if ((ply > RANDOM_MOVE))
-					AddRecord(grp->GetMateSearchMove(id), 30000, false);
+	//			// 局面追加（ランダム局面は除く）
+	//			if ((ply > RANDOM_MOVE))
+	//				AddRecord(grp->GetMateSearchMove(id), 10000, true);
 
-				NextGame();
-				return;
-			}
-			case MateSearchEntry::LOSE:
-				SPDLOG_DEBUG(logger, "gpu_id:{} group_id:{} id:{} ply:{} {} mate lose", grp->gpu_id, grp->group_id, id, ply, pos_root->toSFEN());
-				gameResult = (pos_root->turn() == Black) ? WhiteWin : BlackWin;
-				NextGame();
-				return;
-			}
-		}
-	}
+	//			NextGame();
+	//			return;
+	//		}
+	//		case MateSearchEntry::LOSE:
+	//			SPDLOG_DEBUG(logger, "gpu_id:{} group_id:{} id:{} ply:{} {} mate lose", grp->gpu_id, grp->group_id, id, ply, pos_root->toSFEN());
+	//			gameResult = (pos_root->turn() == Black) ? WhiteWin : BlackWin;
+	//			NextGame();
+	//			return;
+	//		}
+	//	}
+	//}
 
 	// プレイアウト回数加算
 	playout++;
@@ -1354,19 +1358,21 @@ void UCTSearcher::NextStep()
 			switch (mate_status) {
 			case MateSearchEntry::WIN:
 				SPDLOG_DEBUG(logger, "gpu_id:{} group_id:{} id:{} ply:{} {} mate win", grp->gpu_id, grp->group_id, id, ply, pos_root->toSFEN());
-				gameResult = (pos_root->turn() == Black) ? BlackWin : WhiteWin;
+				//gameResult = (pos_root->turn() == Black) ? BlackWin : WhiteWin;
 
 				// 局面追加（初期局面は除く）
 				if ((ply > RANDOM_MOVE))
-					AddRecord(grp->GetMateSearchMove(id), 30000, false);
-
-				NextGame();
+					AddRecord(grp->GetMateSearchMove(id), 10000, true, true);
+				winrate_count += 1;
+				NextPly(grp->GetMateSearchMove(id));
 				return;
-			case MateSearchEntry::LOSE:
-				SPDLOG_DEBUG(logger, "gpu_id:{} group_id:{} id:{} ply:{} {} mate lose", grp->gpu_id, grp->group_id, id, ply, pos_root->toSFEN());
-				gameResult = (pos_root->turn() == Black) ? WhiteWin : BlackWin;
-				NextGame();
-				return;
+				//NextGame();
+				//return;
+			//case MateSearchEntry::LOSE:
+				//SPDLOG_DEBUG(logger, "gpu_id:{} group_id:{} id:{} ply:{} {} mate lose", grp->gpu_id, grp->group_id, id, ply, pos_root->toSFEN());
+				//gameResult = (pos_root->turn() == Black) ? WhiteWin : BlackWin;
+				//NextGame();
+				//return;
 			}
 		}
 
