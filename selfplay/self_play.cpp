@@ -971,8 +971,13 @@ UCTSearcher::SelectMaxUcbChild(child_node_t* parent, uct_node_t* current)
 			q = (float)(win / move_count);
 			u = sqrt_sum / (1 + move_count);
 			if (move_count >= 3) {
-				float v = sqrt((move_count / (move_count - 1)) * (win2 / move_count - q * q));
-				c_dynamic = c * v * DYNAMIC_PARAM;
+				const float v = max(0.05f, sqrt((move_count / (move_count - 1)) * (win2 / move_count - q * q)));
+				if (move_count < 50) {
+					const float r = (50.0 - move_count) / 50.0;
+					c_dynamic = r * c + (1.0 - r) * (c * v * DYNAMIC_PARAM);
+				}
+				else
+					c_dynamic = c * v * DYNAMIC_PARAM;
 			}
 		}
 
