@@ -25,7 +25,7 @@
 #include "cppshogi.h"
 
 #include "cxxopts/cxxopts.hpp"
-constexpr double DYNAMIC_PARAM = 6.6;
+constexpr double DYNAMIC_PARAM = 6.0;
 //#define SPDLOG_TRACE_ON
 #define SPDLOG_DEBUG_ON
 #define SPDLOG_EOL "\n"
@@ -970,8 +970,8 @@ UCTSearcher::SelectMaxUcbChild(child_node_t* parent, uct_node_t* current)
 		else {
 			q = (float)(win / move_count);
 			u = sqrt_sum / (1 + move_count);
-			if (move_count > 5) {
-				float v = sqrt((win2 / move_count) - q * q);
+			if (move_count >= 3) {
+				float v = sqrt((move_count / (move_count - 1)) * (win2 / move_count - q * q));
 				c_dynamic = c * v * DYNAMIC_PARAM;
 			}
 		}
