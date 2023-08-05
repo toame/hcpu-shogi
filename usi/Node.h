@@ -42,6 +42,7 @@ struct child_node_t {
 		move = o.move;
 		move_count = (int)o.move_count;
 		win = (WinType)o.win;
+		win2 = (WinType)o.win2;
 		nnrate = (float)o.nnrate;
 		noise = (float)o.noise;
 		return *this;
