@@ -25,7 +25,7 @@
 #include "cppshogi.h"
 
 #include "cxxopts/cxxopts.hpp"
-
+constexpr double DYNAMIC_PARAM = 6.6;
 //#define SPDLOG_TRACE_ON
 #define SPDLOG_DEBUG_ON
 #define SPDLOG_EOL "\n"
@@ -136,6 +136,7 @@ std::atomic<s64> draws(0);
 std::atomic<s64> nyugyokus(0);
 // プレイアウト数
 std::atomic<s64> sum_playouts(0);
+double sum_c_dynamic = 0;
 std::atomic<s64> sum_playouts_remove(0);
 std::atomic<s64> sum_nodes(0);
 // USIエンジンとの対局結果
@@ -193,8 +194,10 @@ inline void
 UpdateResult(child_node_t* child, float result, uct_node_t* current)
 {
 	current->win += (WinType)result;
+	current->win2 += (WinType)(result * result);
 	current->move_count++;
 	child->win += (WinType)result;
+	child->win2 += (WinType)(result * result);
 	child->move_count++;
 }
 
@@ -925,7 +928,7 @@ UCTSearcher::SelectMaxUcbChild(child_node_t* parent, uct_node_t* current)
 	max_value = max_value_nonoise = -FLT_MAX;
 
 	const float sqrt_sum = sqrtf((float)sum);
-	const float c = parent == nullptr ?
+	float c = parent == nullptr ?
 		FastLog((sum + c_base_root + 1.0f) / c_base_root) + c_init_root :
 		FastLog((sum + c_base + 1.0f) / c_base) + (c_init + search_param_diff[ply % 2 == 1 ? search_param_black : search_param_white]);
 	const float fpu_reduction = (parent == nullptr ? 0.0f : c_fpu_reduction) * sqrtf(current->visited_nnrate);
@@ -933,6 +936,14 @@ UCTSearcher::SelectMaxUcbChild(child_node_t* parent, uct_node_t* current)
 	const float init_u = sum == 0 ? 1.0f : sqrt_sum;
 
 	// UCB値最大の手を求める
+	// float c_dynamic = c;
+	//if (sum > 10) {
+	//	double q = sum_win / sum;
+	//	double win2 = current->win2;
+	//	float v = sqrt((win2 / sum) - q * q);
+	//	c_dynamic = c * v * DYNAMIC_PARAM;
+	//}
+	int child_num_valid = 0;
 	for (int i = 0; i < child_num; i++) {
 		//if (uct_child[i].IsWin()) {
 		//	child_win_count++;
@@ -948,8 +959,9 @@ UCTSearcher::SelectMaxUcbChild(child_node_t* parent, uct_node_t* current)
 		//}
 
 		const WinType win = uct_child[i].win;
+		const WinType win2 = uct_child[i].win2;
 		const int move_count = uct_child[i].move_count;
-
+		float c_dynamic = c;
 		if (move_count == 0) {
 			// 未探索のノードの価値に、親ノードの価値を使用する
 			q = parent_q;
@@ -958,18 +970,21 @@ UCTSearcher::SelectMaxUcbChild(child_node_t* parent, uct_node_t* current)
 		else {
 			q = (float)(win / move_count);
 			u = sqrt_sum / (1 + move_count);
+			if (move_count > 5) {
+				float v = sqrt((win2 / move_count) - q * q);
+				c_dynamic = c * v * DYNAMIC_PARAM;
+			}
 		}
 
 		float rate = uct_child[i].nnrate;
 		float noise_rate = parent == nullptr ? uct_child[i].nnrate * ALPHA_D + (1.0f - ALPHA_D) * uct_child[i].noise : uct_child[i].nnrate;
-		const float ucb_value = q + c * u * noise_rate;
+		const float ucb_value = q + c_dynamic * u * noise_rate;
 
 		if (ucb_value > max_value) {
 			max_value = ucb_value;
 			max_child = i;
 		}
 	}
-
 	if (child_win_count == child_num) {
 		// 子ノードがすべて勝ちのため、自ノードを負けにする
 		if (parent != nullptr)
@@ -1154,11 +1169,13 @@ void UCTSearcher::Playout(visitor_t& visitor)
 				first_normal_move = true;
 				random_temperature_black = RANDOM_TEMPERATURE;
 				random_temperature_white = RANDOM_TEMPERATURE * 0.98f;
-				search_param_black = (*mt_64)() % 3;
-				search_param_white = (*mt_64)() % 3;
-				while (search_param_black == search_param_white) {
-					search_param_white = (*mt_64)() % 3;
-				}
+				//search_param_black = (*mt_64)() % 3;
+				//search_param_white = (*mt_64)() % 3;
+				//while (search_param_black == search_param_white) {
+				//	search_param_white = (*mt_64)() % 3;
+				//}
+				search_param_black = 1;
+				search_param_white = 1;
 				//// 開始局面を局面集からランダムに選ぶ
 				//{
 				//	std::unique_lock<Mutex> lock(imutex);
@@ -1346,14 +1363,15 @@ void UCTSearcher::NextStep()
 	if (InterruptionCheck(playout, ((ply > RANDOM_MOVE)) ? EXTENSION_TIMES : 0)) {
 		// 平均プレイアウト数を計測
 		sum_playouts += playout;
+		double v = sqrt((root_node->win2 / double(playout)) - (root_node->win / double(playout)) * (root_node->win / double(playout)));
+		double c_tmp = FastLog((playout + c_base_root + 1.0f) / c_base_root) + c_init_root;
+		sum_c_dynamic += c_tmp * v * DYNAMIC_PARAM;
+		
 		++sum_nodes;
-
+		//std::cerr << sum_c_dynamic / sum_nodes << " " << c_tmp * v * 6.5 << std::endl;
 		// 詰み探索の結果を待つ
-		if (ROOT_MATE_SEARCH_DEPTH > 0) {
-			while (mate_status == MateSearchEntry::RUNING) {
-				this_thread::yield();
-				mate_status = grp->GetMateSearchStatus(id);
-			}
+		mate_status = grp->GetMateSearchStatus(id);
+		if (ROOT_MATE_SEARCH_DEPTH > 0 && mate_status != MateSearchEntry::RUNING) {
 			// 詰みの場合
 			switch (mate_status) {
 			case MateSearchEntry::WIN:
@@ -1768,7 +1786,7 @@ void make_teacher(const char* recordFileName, const char* outputFileName, const 
 			const double progress = static_cast<double>(madeTeacherNodes) / teacherNodes;
 			auto elapsed_msec = t.elapsed();
 			if (progress > 0.0) // 0 除算を回避する。
-				logger->info("Progress:{:.2f}%, nodes:{}, nodes/sec:{:.2f}, games:{}, draw:{}, nyugyoku:{}, ply/game:{:.2f}, playouts/node:{:.2f},  playouts_remove/node:{:.2f} gpu id:{}, usi_games:{}, usi_win:{}, usi_draw:{}, Elapsed:{}[s], Remaining:{}[s]",
+				logger->info("Progress:{:.2f}%, nodes:{}, nodes/sec:{:.2f}, games:{}, draw:{}, nyugyoku:{}, ply/game:{:.2f}, playouts/node:{:.2f},  playouts_remove/node:{:.2f} c:{:.4f} gpu id:{}, usi_games:{}, usi_win:{}, usi_draw:{}, Elapsed:{}[s], Remaining:{}[s]",
 					std::min(100.0, progress * 100.0),
 					idx,
 					static_cast<double>(idx) / elapsed_msec * 1000.0,
@@ -1778,6 +1796,7 @@ void make_teacher(const char* recordFileName, const char* outputFileName, const 
 					static_cast<double>(madeTeacherNodes) / games,
 					static_cast<double>(sum_playouts) / sum_nodes,
 					static_cast<double>(sum_playouts_remove) / sum_nodes,
+					static_cast<double>(sum_c_dynamic) / sum_nodes,
 					ss.str(),
 					usi_games,
 					usi_wins,
