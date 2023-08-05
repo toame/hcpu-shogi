@@ -52,7 +52,7 @@ typedef features2_t Features2;
 typedef packed_features1_t Features1;
 typedef packed_features2_t Features2;
 #endif
-
+constexpr double DYNAMIC_PARAM = 6.0;
 #ifdef MULTI_PONDER
 std::mutex mtx_expand_root;
 std::condition_variable cond_expand_root;
@@ -234,8 +234,10 @@ inline void
 UpdateResult(child_node_t* child, float result, uct_node_t* current)
 {
 	atomic_fetch_add(&current->win, (WinType)result);
+	atomic_fetch_add(&current->win2, (WinType)(result * result));
 	if constexpr (VIRTUAL_LOSS != 1) current->move_count += 1 - VIRTUAL_LOSS;
 	atomic_fetch_add(&child->win, (WinType)result);
+	atomic_fetch_add(&child->win2, (WinType)(result * result));
 	if constexpr (VIRTUAL_LOSS != 1) child->move_count += 1 - VIRTUAL_LOSS;
 }
 
@@ -1607,8 +1609,9 @@ UCTSearcher::SelectMaxUcbChild(child_node_t* parent, uct_node_t* current)
 		}
 
 		const WinType win = uct_child[i].win;
+		const WinType win2 = uct_child[i].win2;
 		const int move_count = uct_child[i].move_count;
-
+		float c_dynamic = c;
 		if (move_count == 0) {
 			// 未探索のノードの価値に、親ノードの価値を使用する
 			q = parent_q;
@@ -1617,11 +1620,15 @@ UCTSearcher::SelectMaxUcbChild(child_node_t* parent, uct_node_t* current)
 		else {
 			q = (float)(win / move_count);
 			u = sqrt_sum / (1 + move_count);
+			if (move_count >= 3) {
+				float v = sqrt(move_count / (move_count - 1) * (win2 / move_count - q * q));
+				c_dynamic = c * v * DYNAMIC_PARAM;
+			}
 		}
 
 		const float rate = uct_child[i].nnrate;
 
-		const float ucb_value = q + c * u * rate;
+		const float ucb_value = q + c_dynamic * u * rate;
 
 		if (ucb_value > max_value) {
 			max_value = ucb_value;

@@ -31,12 +31,12 @@ constexpr int NOT_EXPANDED = -1;
 
 struct uct_node_t;
 struct child_node_t {
-	child_node_t() : move_count(0), win((WinType)0), nnrate(0.0f), noise(0.0f) {}
+	child_node_t() : move_count(0), win((WinType)0), win2((WinType)0), nnrate(0.0f), noise(0.0f) {}
 	child_node_t(const Move move)
-		: move(move), move_count(0), win((WinType)0), nnrate(0.0f), noise(0.0f) {}
+		: move(move), move_count(0), win((WinType)0), win2((WinType)0), nnrate(0.0f), noise(0.0f) {}
 	// ムーブコンストラクタ
 	child_node_t(child_node_t&& o) noexcept
-		: move(o.move), move_count((int)o.move_count), win((WinType)o.win), nnrate(o.nnrate), noise(o.noise) {}
+		: move(o.move), move_count((int)o.move_count), win((WinType)o.win), win2((WinType)o.win2), nnrate(o.nnrate), noise(o.noise) {}
 	// ムーブ代入演算子
 	child_node_t& operator=(child_node_t&& o) noexcept {
 		move = o.move;
@@ -60,11 +60,12 @@ struct child_node_t {
 	float noise;
 	atomic_t<int> move_count; // 探索回数
 	atomic_t<WinType> win;    // 勝った回数
+	atomic_t<WinType> win2;    // 勝った回数
 };
 
 struct uct_node_t {
 	uct_node_t()
-		: move_count(NOT_EXPANDED), win(0), visited_nnrate(0.0f), child_num(0) {}
+		: move_count(NOT_EXPANDED), win(0), win2(0), visited_nnrate(0.0f), child_num(0) {}
 
 	// 子ノード作成
 	uct_node_t* CreateChildNode(int i) {
@@ -99,6 +100,7 @@ struct uct_node_t {
 
 	atomic_t<int> move_count;
 	atomic_t<WinType> win;
+	atomic_t<WinType> win2;
 	atomic_t<float> visited_nnrate;
 	short child_num;                       // 子ノードの数
 	std::unique_ptr<child_node_t[]> child; // 子ノードの情報
