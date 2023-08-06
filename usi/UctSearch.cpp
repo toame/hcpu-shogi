@@ -52,7 +52,7 @@ typedef features2_t Features2;
 typedef packed_features1_t Features1;
 typedef packed_features2_t Features2;
 #endif
-constexpr double DYNAMIC_PARAM = 5.5;
+constexpr double DYNAMIC_PARAM = 6.0;
 #ifdef MULTI_PONDER
 std::mutex mtx_expand_root;
 std::condition_variable cond_expand_root;
@@ -1101,6 +1101,7 @@ UctSearchGenmove(Position* pos, const Key starting_pos_key, const std::vector<Mo
 			const auto& child = current_root->child[i];
 			cout << i << ":" << child.move.toUSI() << " move_count:" << child.move_count << " nnrate:" << child.nnrate
 				<< " win_rate:" << (child.move_count > 0 ? child.win / child.move_count : 0)
+				<< " win_rate2:" << (child.move_count > 0 ? child.win2 / child.move_count : 0)
 				<< (child.IsLose() ? " win" : "") << (child.IsWin() ? " lose" : "") << endl;
 		}
 
@@ -1621,13 +1622,9 @@ UCTSearcher::SelectMaxUcbChild(child_node_t* parent, uct_node_t* current)
 			q = (float)(win / move_count);
 			u = sqrt_sum / (1 + move_count);
 			if (move_count >= 3) {
-				const float v = max(0.05f, sqrt((move_count / (move_count - 1)) * (win2 / move_count - q * q)));
-				if (move_count < 50) {
-					const float r =  (50.0 - move_count) / 50.0;
-					c_dynamic = r * c + (1.0 - r) * (c * v * DYNAMIC_PARAM);
-				}
-				else
-					c_dynamic = c * v * DYNAMIC_PARAM;
+				const float v = sqrt((move_count / (move_count - 1)) * max(1e-5f, (win2 / move_count - q * q)));
+				const float r = 1.0 / sqrtf(move_count) + 0.25;
+				c_dynamic = r * c + (1.0 - r) * (c * v * DYNAMIC_PARAM);
 			}
 		}
 

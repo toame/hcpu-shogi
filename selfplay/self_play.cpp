@@ -38,6 +38,7 @@ using namespace std;
 // 候補手の最大数(盤上全体)
 constexpr int UCT_CHILD_MAX = 593;
 int threads = 2;
+const int INTERVAL = 150;
 float ALPHA_D = 0.75f;
 float KLDGAIN_THRESHOLD = 0.0000100;
 void random_dirichlet(std::mt19937_64& mt, std::vector<float>& x, const float alphaSum) {
@@ -971,13 +972,9 @@ UCTSearcher::SelectMaxUcbChild(child_node_t* parent, uct_node_t* current)
 			q = (float)(win / move_count);
 			u = sqrt_sum / (1 + move_count);
 			if (move_count >= 3) {
-				const float v = max(0.05f, sqrt((move_count / (move_count - 1)) * (win2 / move_count - q * q)));
-				if (move_count < 50) {
-					const float r = (50.0 - move_count) / 50.0;
-					c_dynamic = r * c + (1.0 - r) * (c * v * DYNAMIC_PARAM);
-				}
-				else
-					c_dynamic = c * v * DYNAMIC_PARAM;
+				const float v = sqrt((move_count / (move_count - 1)) * max(1e-5f, (win2 / move_count - q * q)));
+				const float r = 1.0 / sqrtf(move_count) + 0.25;
+				c_dynamic = r * c + (1.0 - r) * (c * v * DYNAMIC_PARAM);
 			}
 		}
 
@@ -1029,7 +1026,7 @@ UCTSearcher::InterruptionCheck(const int playout_count, const int extension_time
 	const int rest = max_playout_num - playout_count;
 	const child_node_t* uct_child = root_node->child.get();
 
-	if (playout_count % 100 != 0 || playout_count == 0)
+	if (playout_count % INTERVAL != 0 || playout_count == 0)
 		return false;
 
 	if (extension_times == 0 && playout_count >= max_playout_num / 4) {
@@ -1042,13 +1039,13 @@ UCTSearcher::InterruptionCheck(const int playout_count, const int extension_time
 	}
 
 	float kldgain = 0.0;
-	if (playout_count == 100) {
+	if (playout_count == INTERVAL) {
 		for (int i = 0; i < child_num; i++) {
 			prev_visit[i] = uct_child[i].move_count;
 		}
 		return false;
 	}
-	float sum1 = playout_count - 100;
+	float sum1 = playout_count - INTERVAL;
 	float sum2 = playout_count;
 	for (int i = 0; i < child_num; i++) {
 		float old_p = prev_visit[i] / sum1;
@@ -1058,7 +1055,7 @@ UCTSearcher::InterruptionCheck(const int playout_count, const int extension_time
 			kldgain += old_p * log(old_p / new_p);
 		}
 	}
-	kldgain /= 100;
+	kldgain /= INTERVAL;
 	if (previous_kldgain > 0 && (previous_kldgain + kldgain) * 0.5 < KLDGAIN_THRESHOLD) {
 		return true;
 	}
