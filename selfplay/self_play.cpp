@@ -94,8 +94,8 @@ constexpr int64_t MATE_SEARCH_MIN_NODE = 1000;
 // モデルのパス
 string model_path;
 
-set<Key> st[100];
-int st_count[100];
+set<Key> st[1000];
+int st_count[1000];
 
 int playout_num = 1000;
 
