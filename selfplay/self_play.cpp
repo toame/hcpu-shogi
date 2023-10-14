@@ -89,7 +89,7 @@ float WINRATE_THRESHOLD;
 uint32_t ROOT_MATE_SEARCH_DEPTH;
 // 詰み探索の最大ノード数
 int64_t MATE_SEARCH_MAX_NODE;
-constexpr int64_t MATE_SEARCH_MIN_NODE = 2000;
+constexpr int64_t MATE_SEARCH_MIN_NODE = 1000;
 
 // モデルのパス
 string model_path;
@@ -1365,7 +1365,7 @@ void UCTSearcher::NextStep()
 	if (InterruptionCheck(playout, ((ply > RANDOM_MOVE)) ? EXTENSION_TIMES : 0)) {
 		// 平均プレイアウト数を計測
 		sum_playouts += playout;
-		double v = sqrt((root_node->win2 / double(playout)) - (root_node->win / double(playout)) * (root_node->win / double(playout)));
+		double v = sqrt(max(1e-8, (root_node->win2 / double(playout)) - (root_node->win / double(playout)) * (root_node->win / double(playout))));
 		double c_tmp = FastLog((playout + c_base_root + 1.0f) / c_base_root) + c_init_root;
 		sum_c_dynamic += c_tmp * v * DYNAMIC_PARAM;
 		
@@ -1575,7 +1575,12 @@ void UCTSearcher::NextStep()
 			}
 
 			// 局面追加
-			AddRecord(best_move, value_to_score(best_wp), true);
+			bool unduplication = true;
+			auto itr = st[ply].find(pos_root->getKey());
+			if (itr != st[ply].end()) {
+				unduplication = false;
+			}
+			AddRecord(best_move, value_to_score(best_wp), unduplication);
 		}
 
 		NextPly(best_move);
